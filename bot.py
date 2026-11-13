@@ -482,10 +482,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(T(uid, "downloading"))
         try:
             base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
-            files = download_with_ytdlp(text, base, want_audio=True, quality="720")
+            files = download_with_ytdlp(text, base, want_audio=False, quality="720")
             if files:
                 with open(files[0], "rb") as f:
-                    await update.message.reply_audio(f)
+                    await update.message.reply_video(f)
                 try:
                     os.remove(files[0])
                 except:

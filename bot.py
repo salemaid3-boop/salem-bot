@@ -1,6 +1,5 @@
 import os
 import json
-import re
 import time
 import glob
 import requests
@@ -66,7 +65,6 @@ def is_vip(uid):
 TEXTS = {
     "ar": {
         "choose_lang_title": "اختر لغتك",
-        "choose_lang_sub": "Choose your language",
         "welcome": "اهلا بيك في نزل",
         "welcome_sub": "نزل فيديوهات وصوتيات من كل المنصات",
         "points": "نقطك",
@@ -109,7 +107,6 @@ TEXTS = {
     },
     "en": {
         "choose_lang_title": "Choose your language",
-        "choose_lang_sub": "اختر لغتك",
         "welcome": "Welcome to Nezel",
         "welcome_sub": "Download videos and audios from all platforms",
         "points": "Points",
@@ -167,7 +164,6 @@ def lang_keyboard():
 
 def main_keyboard(uid):
     u = get_user(uid)
-    lang = u.get("lang") or "ar"
     if is_vip(uid):
         days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
         vip_txt = f"👑 {T(uid, 'vip_btn')} | {T(uid, 'vip_left')} {max(1, days)} {T(uid, 'vip_days')}"
@@ -192,7 +188,6 @@ def show_main_menu_text(uid, name):
         vip_line = f"👑 {T(uid, 'vip_left')} {max(1, days)} {T(uid, 'vip_days')}"
     else:
         vip_line = f"👑 {T(uid, 'not_vip')}"
-    # كل سطر لوحده، مفيش خلط عربي وانجليزي في نفس السطر
     lines = []
     lines.append(f"✨ {T(uid, 'welcome')} {name} 👑")
     lines.append("")
@@ -205,9 +200,7 @@ def show_main_menu_text(uid, name):
     lines.append(f"👇 {T(uid, 'send_link')}")
     return "\n".join(lines)
 
-# ---- البحث الجديد: بيستخدم yt-dlp ytsearch وبيجيب 5 نتايج ----
 def do_search(query):
-    # الطريقة 1: ytsearch من yt-dlp - دي اللي بتشتغل دايما
     try:
         opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, "socket_timeout": 30}
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -225,7 +218,6 @@ def do_search(query):
                 return results
     except Exception as e:
         print("ytsearch failed: " + str(e))
-    # الطريقة 2: احتياطي - Invidious
     try:
         r = requests.get("https://inv.nadeko.net/api/v1/search", params={"q": query, "type": "video"}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
@@ -274,13 +266,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u["state"] = "home"
     u["support_mode"] = False
     save_data()
-    # لو لسه مختارش لغة، نجيبله اختيار اللغة الاول
-    if not u.get("lang"):
-        text = "اختر لغتك\n\nChoose your language"
-        await update.message.reply_text(text, reply_markup=lang_keyboard())
-        return
-    name = update.effective_user.first_name or ""
-    await update.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
+    # اللغة اول حاجة كل مرة، مش اول مرة بس
+    text = "اختر لغتك\n\nChoose your language"
+    await update.message.reply_text(text, reply_markup=lang_keyboard())
+    return
 
 async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -319,7 +308,6 @@ async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = " ".join(context.args[1:])
     try:
-        # الرد في سطرين منفصلين عشان ميتشقلبش
         full = f"{T(int(target), 'support_reply_title')}\n\n{msg}"
         await context.bot.send_message(chat_id=int(target), text=full)
         await update.message.reply_text("Sent")
@@ -350,7 +338,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(T(uid, "lang_changed"))
         await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
         return
-    # لو لسه مختارش لغة، اجبره يختار
     if not u.get("lang"):
         await q.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
@@ -362,7 +349,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "lang":
         await q.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
     elif data == "support":
-        # الدعم الحقيقي: بيكتب رسالة، مش بيفتح صفحة فودافون
         u["state"] = "support"
         u["support_mode"] = True
         save_data()
@@ -436,7 +422,6 @@ async def handle_choose_result(update: Update, context: ContextTypes.DEFAULT_TYP
     if not data.startswith("pick_"):
         return
     vid = data.replace("pick_", "")
-    # عرض اختيارات الصيغة بشكل نضيف
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data=f"dl_audio_{vid}")],
         [InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 720", callback_data=f"dl_720_{vid}")],
@@ -451,11 +436,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (update.message.text or "").strip()
     if not text:
         return
-    # لو لسه مختارش لغة، مينفعش يكمل
     if not u.get("lang"):
         await update.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
-    # الدعم: رسالة بتتبعت للأدمن من غير رقم تليفون ومن غير صفحة غريبة
     if u.get("support_mode") or u.get("state") == "support":
         u["support_mode"] = False
         u["state"] = "home"
@@ -464,7 +447,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ADMIN_ID != 0:
             try:
                 name = update.effective_user.first_name or ""
-                # كل معلومة في سطر لوحده عشان ميتشقلبش
                 msg_text = "رسالة دعم جديدة\n"
                 msg_text += f"الاسم: {name}\n"
                 msg_text += f"الايدي: {uid}\n"
@@ -478,17 +460,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name2 = update.effective_user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
-    # البحث
     if u.get("state") == "search":
         u["state"] = "home"
         save_data()
-        # رسالة البحث في سطرين منفصلين
         msg = await update.message.reply_text(f"🔍 {T(uid, 'searching')}: {text}\n{T(uid, 'search_wait')}...")
         results = do_search(text)
         if not results:
             await msg.edit_text(T(uid, "not_found"))
             return
-        # اعرض 5 نتايج كازرار
         buttons = []
         for r in results:
             title = r["title"]
@@ -499,7 +478,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup(buttons)
         await msg.edit_text(f"{T(uid, 'choose_result')}:", reply_markup=kb)
         return
-    # لينك مباشر
     if "http" in text and any(x in text for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"]):
         await update.message.reply_text(T(uid, "downloading"))
         try:
@@ -517,7 +495,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"{T(uid, 'download_failed')}\n{str(e)}")
         return
-    # اي رسالة تانية -> القايمة الرئيسية
     name = update.effective_user.first_name or ""
     await update.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
 

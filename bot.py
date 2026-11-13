@@ -1,718 +1,424 @@
-import os, json, time, threading, glob, sys, traceback, re, requests
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os, json, re, time, glob, requests
+import yt_dlp
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 1159182662
-ADMIN_USERNAME = "@SALEM"
-PAY_NUMBER = "01015414353"
-PAY_METHOD = "فودافون كاش"
-
-if not TOKEN:
-    print("ERROR: BOT_TOKEN مش موجود في Variables")
-    sys.exit(1)
-
-bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
-DB_FILE = "nezel_db.json"
-DB_LOCK = threading.Lock()
-
-VIP_PRICE = "50 جنيه"
-VIP_DAYS = 30
-POINTS_FOR_VIP = 100
-INVITES_FOR_VIP = 50
-POINTS_PER_INVITE = 5
-
-# بيحفظ مين مستني منه ايدي VIP
-WAITING_VIP_ID = set()
-# بيحفظ مين مستني منه ايدي UNVIP
-WAITING_UNVIP_ID = set()
-
-PIPED_INSTANCES = [
-    "https://piped.video",
-    "https://piped.privacyredirect.com",
-    "https://piped.adminforge.de",
-    "https://inv.nadeko.net",
-    "https://piped.mha.fi",
-]
-
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 try:
-    from PIL import Image
-    HAS_PIL = True
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 except:
-    HAS_PIL = False
+    ADMIN_ID = 0
+DATA_FILE = "users.json"
+PIPED_INSTANCES = ["https://piped.video", "https://piped.privacyredirect.com", "https://piped.adminforge.de", "https://piped.mha.fi"]
 
-try:
-    import yt_dlp
-    HAS_YTDLP = True
-except:
-    HAS_YTDLP = False
-
-try:
-    from flask import Flask
-    app = Flask(__name__)
-    @app.route('/')
-    def home():
-        return "Nezel Bot is Running!"
-    def run_flask():
-        port = int(os.environ.get("PORT", 10000))
-        app.run(host="0.0.0.0", port=port)
-    threading.Thread(target=run_flask, daemon=True).start()
-except Exception as e:
-    print(f"Flask error: {e}")
-
-def default_db():
-    return {"users": {}, "fav": {}, "history": {}, "points": {}, "vip": {}, "invites": {}, "mode": {}, "lang": {}, "last_dl": {}}
-
-def load_db():
-    with DB_LOCK:
-        if not os.path.exists(DB_FILE):
-            return default_db()
+def load_data():
+    if os.path.exists(DATA_FILE):
         try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
                 d = json.load(f)
-            for k in default_db().keys():
-                if k not in d:
-                    d[k] = {}
-            if isinstance(d["vip"], list):
-                new_vip = {}
-                for u in d["vip"]:
-                    new_vip[str(u)] = time.time() + VIP_DAYS*86400
-                d["vip"] = new_vip
-            return d
+                if isinstance(d, dict) and "users" in d:
+                    return d
         except:
-            return default_db()
+            pass
+    return {"users": {}}
 
-def save_db(d):
-    with DB_LOCK:
-        try:
-            with open(DB_FILE, "w", encoding="utf-8") as f:
-                json.dump(d, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Save DB error: {e}")
-
-def is_admin(uid):
-    return str(uid) == str(ADMIN_ID)
-
-def get_lang(uid):
-    db = load_db()
-    return db["lang"].get(str(uid), "ar")
-
-def set_lang(uid, lang):
-    db = load_db()
-    db["lang"][str(uid)] = lang
-    save_db(db)
-
-def get_mode(uid):
-    db = load_db()
-    return db["mode"].get(str(uid), "video")
-
-def set_mode(uid, mode):
-    db = load_db()
-    db["mode"][str(uid)] = mode
-    save_db(db)
-
-def T(uid, ar, en):
-    lang = get_lang(uid)
-    return ar if lang == "ar" else en
-
-def get_points(uid, db=None):
-    if db is None: db = load_db()
-    return db["points"].get(str(uid), 0)
-
-def get_invites(uid, db=None):
-    if db is None: db = load_db()
-    return db["invites"].get(str(uid), 0)
-
-def is_vip(uid, db=None):
-    if db is None: db = load_db()
-    exp = db["vip"].get(str(uid), 0)
-    if exp and exp > time.time():
-        return True
-    if exp and exp <= time.time():
-        db["vip"].pop(str(uid), None)
-        save_db(db)
-    return False
-
-def vip_left_days(uid, db=None):
-    if db is None: db = load_db()
-    exp = db["vip"].get(str(uid), 0)
-    if not exp: return 0
-    return max(int((exp - time.time()) / 86400) + 1, 0)
-
-def make_vip_auto(uid, db, reason=""):
-    if db["vip"].get(str(uid), 0) > time.time():
-        return False
-    db["vip"][str(uid)] = time.time() + VIP_DAYS*86400
-    save_db(db)
+def save_data():
     try:
-        bot.send_message(int(uid), f"🎉 مبروك يا بطل!\n\n👑 بقيت VIP\n\n{reason}\n📅 الاشتراك: {VIP_DAYS} يوم\n💎 تحميل بدون حدود\n⚡ اولوية في التحميل\n\nاستمتع يا وحش 🔥")
-    except: pass
-    return True
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(DATA, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"save failed: {e}")
 
-def do_make_vip(target_id, admin_msg):
-    db = load_db()
-    db["vip"][str(target_id)] = time.time() + VIP_DAYS*86400
-    save_db(db)
-    bot.reply_to(admin_msg, f"✅ بقى VIP 👑 لمدة {VIP_DAYS} يوم\n🆔 الايدي: {target_id}")
+DATA = load_data()
+
+def get_user(uid):
+    uid = str(uid)
+    if uid not in DATA["users"] or not isinstance(DATA["users"][uid], dict):
+        DATA["users"][uid] = {"lang": "ar", "vip": 0, "state": "home", "support_mode": False}
+        save_data()
+    u = DATA["users"][uid]
+    if u.get("lang") not in ["ar", "en"]:
+        u["lang"] = "ar"
+    if "vip" not in u:
+        u["vip"] = 0
+    if "state" not in u:
+        u["state"] = "home"
+    if "support_mode" not in u:
+        u["support_mode"] = False
+    return u
+
+def is_vip(uid):
+    u = get_user(uid)
     try:
-        bot.send_message(int(target_id), f"🎉 مبروك! بقيت VIP 👑\n\n📅 لمدة {VIP_DAYS} يوم\n💎 تحميل بدون حدود - شامل كل حاجة\n⚡ اولوية في التحميل\n💳 دفعت: {VIP_PRICE}")
-    except: pass
-
-def add_point(uid):
-    db = load_db()
-    db["points"][str(uid)] = db["points"].get(str(uid), 0) + 1
-    if db["points"][str(uid)] >= POINTS_FOR_VIP and not is_vip(uid, db):
-        make_vip_auto(uid, db, "🏆 جمعت 100 نقطة - تستاهل تبقى VIP ببلاش!")
-    else:
-        save_db(db)
-
-def save_history(uid, link):
-    db = load_db()
-    h = db["history"].get(str(uid), [])
-    h.insert(0, link[:80])
-    db["history"][str(uid)] = h[:20]
-    db["last_dl"][str(uid)] = link[:300]
-    save_db(db)
-
-def home_kb(uid):
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton("📥 ┊ تحميل فيديو", callback_data="mode_video"), InlineKeyboardButton("🎵 ┊ تحميل MP3", callback_data="mode_mp3"))
-    kb.add(InlineKeyboardButton("🎬 ┊ جودة 720", callback_data="mode_q720"), InlineKeyboardButton("🎬 ┊ جودة 1080", callback_data="mode_q1080"))
-    kb.add(InlineKeyboardButton("🔍 ┊ بحث بالاسم", callback_data="mode_search"), InlineKeyboardButton("🖼️ ┊ صور لـ PDF", callback_data="mode_pdf"))
-    kb.add(InlineKeyboardButton("⭐ ┊ مفضلتي", callback_data="show_fav"), InlineKeyboardButton("📂 ┊ سجلي", callback_data="show_history"))
-    kb.add(InlineKeyboardButton("🎁 ┊ نقطي ودعوتي", callback_data="my_points"), InlineKeyboardButton("👑 ┊ VIP", callback_data="vip_info"))
-    kb.add(InlineKeyboardButton("🌐 ┊ اللغة / Language", callback_data="lang_menu"), InlineKeyboardButton("📞 ┊ الدعم", callback_data="support"))
-    if is_admin(uid):
-        kb.add(InlineKeyboardButton("👑 ┊ لوحة تحكم", callback_data="admin_panel"))
-    return kb
-
-def welcome_text(user, db=None):
-    uid = str(user.id)
-    if db is None: db = load_db()
-    name = user.first_name or "صديقي"
-    pts = get_points(uid, db)
-    inv = get_invites(uid, db)
-    vip_txt = f"👑 VIP - فاضل {vip_left_days(uid, db)} يوم" if is_vip(uid, db) else "❌ مش VIP"
-    lang = db["lang"].get(uid, "ar")
-    if lang == "en":
-        return f"✨ Welcome {name} to Nezel 👑\n\n━━━━━━━━━━━━━━\n📥 TikTok • YouTube • Insta • FB • X\n🎵 MP3 • 🔍 Search • 🖼️ PDF\n━━━━━━━━━━━━━━\n🎁 Points: {pts} / 100\n👥 Invites: {inv} / 50\n👑 {vip_txt}\n━━━━━━━━━━━━━━\n👇 Send link now"
-    return f"✨ اهلا {name} في Nezel 👑\n\n━━━━━━━━━━━━━━\n📥 بيحمل من: تيك توك • يوتيوب • انستا • فيسبوك • X\n🎵 MP3 • 🔍 بحث بالاسم • 🖼️ صور لـ PDF\n━━━━━━━━━━━━━━\n🎁 نقطك: {pts} / 100\n👥 دعواتك: {inv} / 50\n👑 {vip_txt}\n━━━━━━━━━━━━━━\n👇 ابعت اللينك على طول"
-
-def fav_kb():
-    kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("⭐ ضيف للمفضلة", callback_data="fav_add"))
-    return kb
-
-def safe_edit(call, text, reply_markup=None):
-    try:
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=reply_markup)
+        return float(u.get("vip", 0)) > time.time()
     except:
-        try:
-            bot.send_message(call.message.chat.id, text, reply_markup=reply_markup)
-        except: pass
+        return False
 
-def extract_youtube_id(url_or_text):
-    m = re.search(r'(?:v=|/shorts/|/embed/|youtu\.be/|/live/)([A-Za-z0-9_-]{11})', url_or_text)
-    if m:
-        return m.group(1)
-    return None
+TEXTS = {
+    "ar": {
+        "welcome": "👋 اهلا بيك في بوت التحميل\nاختار من تحت:",
+        "vip_status": "👑 VIP - فاضل {d} يوم",
+        "not_vip": "❌ مش VIP",
+        "search_prompt": "🔍 اكتب اسم الاغنية او الفيديو:",
+        "searching": "🔍 بدور على: {q} استنى...",
+        "not_found": "❌ ملقيتش حاجة بالاسم ده، جرب اسم تاني",
+        "downloading": "⏳ بحمل... استنى شوية",
+        "choose_lang": "🌐 اختار اللغة / Choose Language:",
+        "support_prompt": "✍️ اكتب رسالتك للدعم:",
+        "support_sent": "✅ رسالتك وصلت للدعم، هنرد عليك قريب",
+        "support_reply": "💬 رد الدعم:\n\n{msg}",
+        "help": "📖 ابعت لينك فيديو من يوتيوب / تيك توك / انستا / فيس بوك، او دوس بحث ودور بالاسم",
+        "choose_format": "🎵 {title}\nاختار:",
+    },
+    "en": {
+        "welcome": "👋 Welcome to Download Bot\nChoose:",
+        "vip_status": "👑 VIP - {d} days left",
+        "not_vip": "❌ Not VIP",
+        "search_prompt": "🔍 Type song or video name:",
+        "searching": "🔍 Searching for: {q} wait...",
+        "not_found": "❌ Nothing found, try another name",
+        "downloading": "⏳ Downloading... wait",
+        "choose_lang": "🌐 Choose Language:",
+        "support_prompt": "✍️ Write your message to support:",
+        "support_sent": "✅ Your message sent to support",
+        "support_reply": "💬 Support reply:\n\n{msg}",
+        "help": "📖 Send a video link from YouTube / TikTok / Insta / Facebook, or tap Search",
+        "choose_format": "🎵 {title}\nChoose:",
+    }
+}
 
-def is_youtube_url(url):
-    return "youtube.com" in url or "youtu.be" in url
+def T(uid, key, **kwargs):
+    u = get_user(uid)
+    lang = u.get("lang", "ar")
+    if lang not in TEXTS:
+        lang = "ar"
+    txt = TEXTS[lang].get(key, key)
+    try:
+        return txt.format(**kwargs)
+    except:
+        return txt
+
+def main_keyboard(uid):
+    u = get_user(uid)
+    lang = u.get("lang", "ar")
+    if is_vip(uid):
+        days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
+        vip_txt = T(uid, "vip_status", d=days)
+    else:
+        vip_txt = T(uid, "not_vip")
+    if lang == "ar":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔍 بحث", callback_data="search"), InlineKeyboardButton("🎵 تحميل", callback_data="help")],
+            [InlineKeyboardButton("🌐 اللغة", callback_data="lang"), InlineKeyboardButton("🛠 الدعم", callback_data="support")],
+            [InlineKeyboardButton(vip_txt, callback_data="vip_info")]
+        ])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 Search", callback_data="search"), InlineKeyboardButton("🎵 Download", callback_data="help")],
+        [InlineKeyboardButton("🌐 Language", callback_data="lang"), InlineKeyboardButton("🛠 Support", callback_data="support")],
+        [InlineKeyboardButton(vip_txt, callback_data="vip_info")]
+    ])
 
 def piped_search(query):
+    import urllib.parse
+    try:
+        q = urllib.parse.quote(query)
+        yt_url = f"https://www.youtube.com/results?search_query={q}"
+        proxy_url = f"https://api.allorigins.win/raw?url={urllib.parse.quote(yt_url)}"
+        r = requests.get(proxy_url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200 and "videoId" in r.text:
+            ids = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', r.text)
+            seen = set()
+            uniq = []
+            for vid in ids:
+                if vid not in seen:
+                    seen.add(vid)
+                    uniq.append(vid)
+            if uniq:
+                return {"id": uniq[0], "title": query, "url": f"/watch?v={uniq[0]}"}
+    except Exception as e:
+        print(f"AllOrigins failed: {e}")
+    try:
+        q = urllib.parse.quote(f"site:youtube.com {query}")
+        r = requests.get(f"https://html.duckduckgo.com/html/?q={q}", timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            m = re.findall(r'watch\?v=([A-Za-z0-9_-]{11})', r.text)
+            if m:
+                return {"id": m[0], "title": query, "url": f"/watch?v={m[0]}"}
+    except Exception as e:
+        print(f"DuckDuckGo failed: {e}")
+    try:
+        r = requests.get("https://yt.lemnoslife.com/noKey/search", params={"part": "snippet", "q": query, "maxResults": 1}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            items = r.json().get("items", [])
+            if items:
+                vid = items[0].get("id", {}).get("videoId", "")
+                if vid:
+                    return {"id": vid, "title": items[0].get("snippet", {}).get("title", query), "url": f"/watch?v={vid}"}
+    except Exception as e:
+        print(f"LemnosLife failed: {e}")
     for inst in PIPED_INSTANCES:
         try:
-            r = requests.get(f"{inst}/api/v1/search", params={"q": query, "filter": "videos"}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.get(f"{inst}/api/v1/search", params={"q": query, "filter": "all"}, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code == 200:
                 data = r.json()
-                if data:
-                    first = data[0]
+                items = data if isinstance(data, list) else data.get("items", [])
+                if items:
+                    first = items[0]
                     url = first.get("url", "")
-                    vid = url.split("v=")[-1] if "v=" in url else url.strip("/").split("/")[-1]
-                    return {"id": vid, "title": first.get("title", ""), "url": url}
-        except Exception as e:
-            print(f"Piped search {inst} failed: {e}")
+                    vid = ""
+                    if "v=" in url:
+                        vid = url.split("v=")[-1].split("&")[0]
+                    elif first.get("videoId"):
+                        vid = first.get("videoId")
+                    if vid and len(vid) == 11:
+                        return {"id": vid, "title": first.get("title", query), "url": url}
+        except:
             continue
     return None
 
-def piped_download(video_id, base, want_audio=False, max_height=None):
-    last_err = ""
+def ytdlp_download(url, base, fmt, is_audio=False):
+    opts = {"format": fmt, "outtmpl": base + ".%(ext)s", "quiet": True, "no_warnings": True, "nocheckcertificate": True, "socket_timeout": 60, "http_headers": {"User-Agent": "Mozilla/5.0"}}
+    if is_audio:
+        opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    files = glob.glob(base + ".*")
+    return files
+
+def piped_download(video_id, base, want_audio=False):
+    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        r = requests.post("https://api.cobalt.tools/", json={"url": yt_url, "isAudioOnly": want_audio, "downloadMode": "auto", "filenameStyle": "basic"}, timeout=30, headers={"Accept": "application/json", "Content-Type": "application/json"})
+        if r.status_code == 200:
+            dl_url = r.json().get("url", "")
+            if dl_url:
+                ext = ".m4a" if want_audio else ".mp4"
+                out = base + ext
+                with requests.get(dl_url, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                    if resp.status_code == 200:
+                        with open(out, "wb") as f:
+                            for chunk in resp.iter_content(8192):
+                                if chunk:
+                                    f.write(chunk)
+                        if os.path.exists(out) and os.path.getsize(out) > 1000:
+                            return out
+    except Exception as e:
+        print(f"Cobalt failed: {e}")
     for inst in PIPED_INSTANCES:
         try:
             r = requests.get(f"{inst}/api/v1/streams/{video_id}", timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code != 200:
                 continue
             data = r.json()
-            download_url = None
+            dl = None
             ext = ".mp4"
             if want_audio:
                 audios = data.get("audioStreams", [])
                 if not audios:
                     continue
                 audios = sorted(audios, key=lambda x: x.get("bitrate", 0), reverse=True)
-                download_url = audios[0].get("url")
+                dl = audios[0].get("url")
                 ext = ".m4a"
             else:
                 vids = data.get("videoStreams", [])
-                best = None
-                for v in vids:
-                    if v.get("itag") in [18, 22] or (v.get("videoOnly") == False and "mp4" in v.get("mimeType", "")):
-                        if max_height and v.get("quality", ""):
-                            try:
-                                q = int(v.get("quality", "0").replace("p", ""))
-                                if q > max_height:
-                                    continue
-                            except: pass
-                        best = v
-                        break
-                if not best and vids:
-                    for v in vids:
-                        if "mp4" in v.get("mimeType", "") and not v.get("videoOnly"):
-                            best = v
-                            break
-                if not best and vids:
-                    best = vids[0]
-                if not best:
+                if not vids:
                     continue
-                download_url = best.get("url")
+                dl = vids[0].get("url")
                 ext = ".mp4"
-            if not download_url:
+            if not dl:
                 continue
-            out_file = base + ext
-            with requests.get(download_url, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+            out = base + ext
+            with requests.get(dl, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                 if resp.status_code != 200:
                     continue
-                with open(out_file, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
+                with open(out, "wb") as f:
+                    for chunk in resp.iter_content(8192):
                         if chunk:
                             f.write(chunk)
-            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
-                return out_file
-        except Exception as e:
-            last_err = str(e)
-            print(f"Piped download {inst} failed: {e}")
+            if os.path.exists(out) and os.path.getsize(out) > 1000:
+                return out
+        except:
             continue
-    raise Exception(last_err or "Piped كله واقع، جرب تاني بعد دقيقة")
+    fmt = "bestaudio/best" if want_audio else "18/22/mp4/best"
+    files = ytdlp_download(yt_url, base, fmt, is_audio=want_audio)
+    if files:
+        return files[0]
+    raise Exception("Download failed")
 
-def ytdlp_download(url, base, fmt, is_audio=False):
-    tries = []
-    if is_audio:
-        tries.append({'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    u = get_user(uid)
+    u["state"] = "home"
+    u["support_mode"] = False
+    save_data()
+    await update.message.reply_text(T(uid, "welcome"), reply_markup=main_keyboard(uid))
+
+async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    u = get_user(uid)
+    if not context.args:
+        await update.message.reply_text("ابعت الايدي بعد /vip - مثال: /vip 123456" if u.get("lang") == "ar" else "Send ID after /vip")
+        return
+    if uid != ADMIN_ID and ADMIN_ID != 0:
+        await update.message.reply_text("مش مسموح" if u.get("lang") == "ar" else "Not allowed")
+        return
+    try:
+        target = str(context.args[0])
+        tu = get_user(target)
+        tu["vip"] = time.time() + 30 * 86400
+        save_data()
+        await update.message.reply_text("✅ بقى VIP لمدة 30 يوم")
+        try:
+            await context.bot.send_message(chat_id=int(target), text="🎉 مبروك! بقيت VIP")
+        except:
+            pass
+    except Exception as e:
+        await update.message.reply_text(f"Error: {e}")
+
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    u = get_user(uid)
+    data = q.data or ""
+    if data == "search":
+        u["state"] = "search"
+        save_data()
+        await q.message.reply_text(T(uid, "search_prompt"))
+    elif data == "help":
+        await q.message.reply_text(T(uid, "help"))
+    elif data == "lang":
+        u["state"] = "home"
+        save_data()
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🇪🇬 عربي", callback_data="set_lang_ar"), InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")]])
+        await q.message.reply_text(T(uid, "choose_lang"), reply_markup=kb)
+    elif data == "set_lang_ar":
+        u["lang"] = "ar"
+        u["state"] = "home"
+        save_data()
+        await q.message.reply_text("✅ اتغيرت للعربي", reply_markup=main_keyboard(uid))
+    elif data == "set_lang_en":
+        u["lang"] = "en"
+        u["state"] = "home"
+        save_data()
+        await q.message.reply_text("✅ Changed to English", reply_markup=main_keyboard(uid))
+    elif data == "support":
+        u["state"] = "support"
+        u["support_mode"] = True
+        save_data()
+        await q.message.reply_text(T(uid, "support_prompt"))
+    elif data == "vip_info":
+        if is_vip(uid):
+            days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
+            await q.message.reply_text(T(uid, "vip_status", d=days))
+        else:
+            await q.message.reply_text(T(uid, "not_vip"))
+
+async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = q.from_user.id
+    data = q.data or ""
+    if data.startswith("dl_audio_"):
+        vid = data.replace("dl_audio_", "")
+        want_audio = True
+    elif data.startswith("dl_video_"):
+        vid = data.replace("dl_video_", "")
+        want_audio = False
     else:
-        tries.append({'format': fmt, 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True, 'merge_output_format': 'mp4'})
-        tries.append({'format': 'best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True})
-    last_err = ""
-    for opts in tries:
-        try:
-            for f in glob.glob(base + "*"):
-                try: os.remove(f)
-                except: pass
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            files = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
-            if files:
-                return files
-        except Exception as e:
-            last_err = str(e)
-            continue
-    raise Exception(last_err)
-
-def cleanup_base(base):
-    for f in glob.glob(base + "*"):
-        try: os.remove(f)
-        except: pass
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    uid = str(message.from_user.id)
-    WAITING_VIP_ID.discard(uid)
-    WAITING_UNVIP_ID.discard(uid)
-    db = load_db()
-    is_new = uid not in db["users"]
-    if is_new:
-        db["users"][uid] = {"name": message.from_user.first_name, "username": message.from_user.username, "time": time.time()}
-        save_db(db)
-        parts = message.text.split()
-        if len(parts) > 1:
-            inviter = parts[1].strip()
-            db2 = load_db()
-            if inviter != uid and inviter in db2["users"]:
-                db2["points"][inviter] = db2["points"].get(inviter, 0) + POINTS_PER_INVITE
-                db2["invites"][inviter] = db2["invites"].get(inviter, 0) + 1
-                inv_count = db2["invites"][inviter]
-                save_db(db2)
-                if inv_count >= INVITES_FOR_VIP and not is_vip(inviter, db2):
-                    db3 = load_db()
-                    make_vip_auto(inviter, db3, f"🔥 جبت {INVITES_FOR_VIP} شخص بدعوتك - تستاهل VIP ببلاش!")
-                else:
-                    try:
-                        bot.send_message(int(inviter), f"🎁 حد دخل بدعوتك!\n\n+{POINTS_PER_INVITE} نقط ✨\n🎁 نقطك: {db2['points'][inviter]} / 100\n👥 دعواتك: {inv_count} / 50\n\nلو وصلت 50 دعوة هتبقى VIP ببلاش 👑")
-                    except: pass
-    bot.reply_to(message, welcome_text(message.from_user), reply_markup=home_kb(uid))
-
-@bot.message_handler(commands=['admin'])
-def admin_cmd(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "مش ليك يا صاحبي")
         return
-    db = load_db()
-    vips = len([u for u, e in db["vip"].items() if e > time.time()])
-    msg = f"👑 لوحة الادمن\n\n━━━━━━━━━━━━━━\n👥 المستخدمين: {len(db['users'])}\n👑 VIP: {vips}\n━━━━━━━━━━━━━━\n📢 /broadcast + رسالتك\n👑 /vip الايدي = VIP شهر\n❌ /unvip الايدي = الغاء VIP"
-    bot.reply_to(message, msg)
-
-@bot.message_handler(commands=['broadcast'])
-def broadcast(message):
-    if not is_admin(message.from_user.id): return
-    txt = message.text.replace("/broadcast", "").strip()
-    if not txt:
-        bot.reply_to(message, "اكتب الرسالة بعد /broadcast")
-        return
-    db = load_db()
-    ok = 0
-    for u in list(db["users"].keys()):
-        try:
-            bot.send_message(int(u), "📢 رسالة من الادمن:\n\n" + txt)
-            ok += 1
-            time.sleep(0.05)
-        except: pass
-    bot.reply_to(message, f"اتبعتت لـ {ok}")
-
-@bot.message_handler(commands=['vip'])
-def make_vip(message):
-    if not is_admin(message.from_user.id):
-        bot.reply_to(message, "مش ليك يا صاحبي")
-        return
-    uid = str(message.from_user.id)
-    parts = message.text.split()
-    # لو بعت /vip 1159182662 في رسالة واحدة - دي الصح
-    if len(parts) >= 2 and parts[1].isdigit():
-        set_mode(uid, "video")
-        do_make_vip(parts[1], message)
-        return
-    # لو بعت /vip لوحده - استنى الايدي في الرسالة الجاية
-    WAITING_VIP_ID.add(uid)
-    set_mode(uid, "video")
-    bot.reply_to(message, "تمام، ابعت الايدي لوحده في الرسالة الجاية 👇\nمثال:\n1159182662")
-
-@bot.message_handler(commands=['unvip'])
-def remove_vip(message):
-    if not is_admin(message.from_user.id): return
-    uid = str(message.from_user.id)
-    parts = message.text.split()
-    if len(parts) >= 2 and parts[1].isdigit():
-        db = load_db()
-        db["vip"].pop(parts[1], None)
-        save_db(db)
-        set_mode(uid, "video")
-        bot.reply_to(message, "اتشال منه VIP ❌")
-        return
-    WAITING_UNVIP_ID.add(uid)
-    set_mode(uid, "video")
-    bot.reply_to(message, "ابعت الايدي لوحده في الرسالة الجاية 👇")
-
-@bot.callback_query_handler(func=lambda c: True)
-def callbacks(call):
-    uid = str(call.from_user.id)
-    data = call.data
+    await q.message.reply_text(T(uid, "downloading"))
     try:
-        if data.startswith("mode_"):
-            m = data.replace("mode_", "")
-            set_mode(uid, m)
-            WAITING_VIP_ID.discard(uid)
-            WAITING_UNVIP_ID.discard(uid)
-            bot.answer_callback_query(call.id, "تمام ✅")
-            if m == "search":
-                bot.send_message(call.message.chat.id, T(uid, "🔍 اكتب اسم الاغنية او الفيديو اللي بتدور عليه", "🔍 Type song or video name"))
-            elif m == "pdf":
-                bot.send_message(call.message.chat.id, T(uid, "🖼️ ابعت الصور ورا بعض، وبعدين اكتب done عشان احولهم PDF", "🖼️ Send images then done for PDF"))
-            else:
-                bot.send_message(call.message.chat.id, T(uid, "✅ تمام يا وحش، ابعت اللينك دلوقتي 👇", "✅ OK, send link now 👇"))
-        elif data == "lang_menu":
-            kb = InlineKeyboardMarkup()
-            kb.add(InlineKeyboardButton("🇪🇬 عربي", callback_data="lang_ar"), InlineKeyboardButton("🇺🇸 English", callback_data="lang_en"))
-            kb.add(InlineKeyboardButton("🔙 رجوع", callback_data="back_home"))
-            safe_edit(call, T(uid, "🌐 اختار اللغة:", "🌐 Choose language:"), kb)
-        elif data == "lang_ar":
-            set_lang(uid, "ar")
-            bot.answer_callback_query(call.id, "عربي 🇪🇬")
-            safe_edit(call, welcome_text(call.from_user), home_kb(uid))
-        elif data == "lang_en":
-            set_lang(uid, "en")
-            bot.answer_callback_query(call.id, "English 🇺🇸")
-            safe_edit(call, welcome_text(call.from_user), home_kb(uid))
-        elif data == "back_home":
-            safe_edit(call, welcome_text(call.from_user), home_kb(uid))
-        elif data == "show_fav":
-            db = load_db()
-            lst = db["fav"].get(uid, [])
-            if not lst:
-                bot.send_message(call.message.chat.id, T(uid, "⭐ المفضلة فاضية لسه", "⭐ Fav is empty"))
-            else:
-                bot.send_message(call.message.chat.id, "⭐ مفضلتك:\n" + "\n".join(lst))
-        elif data == "show_history":
-            db = load_db()
-            h = db["history"].get(uid, [])
-            if not h:
-                bot.send_message(call.message.chat.id, T(uid, "📂 لسه محملتش حاجة", "📂 No downloads yet"))
-            else:
-                bot.send_message(call.message.chat.id, "📂 سجلك:\n" + "\n".join(h[:10]))
-        elif data == "my_points":
-            db = load_db()
-            pts = db["points"].get(uid, 0)
-            inv = db["invites"].get(uid, 0)
-            bot_username = bot.get_me().username
-            link = f"https://t.me/{bot_username}?start={uid}"
-            msg = f"🎁 نقطك ودعواتك\n\n━━━━━━━━━━━━━━\n🎁 نقطك: {pts} / {POINTS_FOR_VIP}\n👥 دعواتك: {inv} / {INVITES_FOR_VIP}\n━━━━━━━━━━━━━━\n💡 كل واحد يدخل بدعوتك = +{POINTS_PER_INVITE} نقط\n👑 100 نقطة = VIP ببلاش\n👑 50 دعوة = VIP ببلاش\n━━━━━━━━━━━━━━\n🔗 لينك دعوتك:\n{link}\n\n📤 ابعته لصحابك واكسب 👑"
-            bot.send_message(call.message.chat.id, msg)
-        elif data == "vip_info":
-            db = load_db()
-            if is_vip(uid, db):
-                days = vip_left_days(uid, db)
-                bot.send_message(call.message.chat.id, f"👑 انت VIP\n\n━━━━━━━━━━━━━━\n✅ تحميل بدون حدود\n⚡ اولوية في التحميل\n📅 فاضلك: {days} يوم\n━━━━━━━━━━━━━━\nاستمتع يا وحش 🔥")
-            else:
-                pts = db["points"].get(uid, 0)
-                inv = db["invites"].get(uid, 0)
-                kb = InlineKeyboardMarkup()
-                kb.add(InlineKeyboardButton(f"💳 اشترك VIP - {VIP_PRICE} / شهر", callback_data="vip_buy"))
-                kb.add(InlineKeyboardButton("🎁 ابعت دعوة واكسب نقط", callback_data="my_points"))
-                kb.add(InlineKeyboardButton("🔙 رجوع", callback_data="back_home"))
-                bot.send_message(call.message.chat.id, f"👑 اشتراك VIP\n\n━━━━━━━━━━━━━━\n💰 السعر: {VIP_PRICE} / شهر\n✅ شامل كل حاجة\n💎 تحميل بدون حدود\n⚡ اولوية في التحميل\n━━━━━━━━━━━━━━\n🎁 نقطك: {pts} / {POINTS_FOR_VIP}\n👥 دعواتك: {inv} / {INVITES_FOR_VIP}\n━━━━━━━━━━━━━━\n💡 3 طرق تبقى VIP:\n1️⃣ تدفع {VIP_PRICE} - دوس على الزرار تحت\n2️⃣ تجمع {POINTS_FOR_VIP} نقطة\n3️⃣ تجيب {INVITES_FOR_VIP} شخص بدعوتك\n━━━━━━━━━━━━━━\n💳 الدفع: {PAY_METHOD}: {PAY_NUMBER}\n📸 ابعت سكرين شوت بعد الدفع للادمن", reply_markup=kb)
-        elif data == "vip_buy":
-            name = call.from_user.first_name or "بدون اسم"
-            username = "@" + call.from_user.username if call.from_user.username else "مفيش يوزر"
-            try:
-                bot.send_message(ADMIN_ID, f"🔥 حد عايز يشترك VIP\n\n━━━━━━━━━━━━━━\n👤 الاسم: {name}\n📱 اليوزر: {username}\n🆔 الايدي: {uid}\n💰 السعر: {VIP_PRICE} / شهر\n💳 المفروض يدفع على: {PAY_NUMBER}\n━━━━━━━━━━━━━━\nعشان تخليه VIP اكتب:\n/vip {uid}")
-                bot.send_message(call.message.chat.id, f"✅ تمام، بعت طلبك للادمن\n\n💰 الاشتراك: {VIP_PRICE} / شهر\n💳 ادفع على {PAY_METHOD}: {PAY_NUMBER}\n📸 ابعت سكرين شوت الدفع للادمن {ADMIN_USERNAME}\n\nالادمن هيكلمك اول ما يشوفه 👑")
-            except:
-                bot.send_message(call.message.chat.id, f"كلم الادمن: {ADMIN_USERNAME}")
-        elif data == "support":
-            bot.send_message(call.message.chat.id, f"📞 الدعم:\n\nكلم الادمن: {ADMIN_USERNAME}\n💳 فودافون كاش: {PAY_NUMBER}\nهنرد عليك في اسرع وقت ❤️")
-        elif data == "admin_panel":
-            if not is_admin(uid):
-                bot.answer_callback_query(call.id, "مش ليك")
-                return
-            db = load_db()
-            vips = len([u for u, e in db["vip"].items() if e > time.time()])
-            msg = f"👑 لوحة تحكم\n\n━━━━━━━━━━━━━━\n👥 المستخدمين: {len(db['users'])}\n👑 VIP: {vips}\n━━━━━━━━━━━━━━\n📢 /broadcast رسالتك\n👑 /vip الايدي = VIP شهر\n❌ /unvip الايدي = الغاء VIP"
-            bot.send_message(call.message.chat.id, msg)
-        elif data == "fav_add":
-            db = load_db()
-            link = db.get("last_dl", {}).get(uid, "")
-            if not link:
-                h = db["history"].get(uid, [])
-                link = h[0] if h else ""
-            if not link:
-                bot.answer_callback_query(call.id, "مفيش حاجة تتحفظ")
-                return
-            lst = db["fav"].get(uid, [])
-            if link not in lst:
-                lst.append(link)
-                db["fav"][uid] = lst
-                save_db(db)
-                bot.answer_callback_query(call.id, "اتضاف ⭐")
-            else:
-                bot.answer_callback_query(call.id, "موجود قبل كده")
-    except Exception as e:
-        print(f"Callback error {data}: {e}")
-        try: bot.answer_callback_query(call.id, "حصل مشكلة، جرب تاني")
-        except: pass
-
-@bot.message_handler(commands=['done'])
-def done_pdf(message):
-    uid = str(message.from_user.id)
-    if not HAS_PIL:
-        bot.reply_to(message, "نزل Pillow الاول: pip install Pillow")
-        return
-    files = sorted(glob.glob(f"pdf_{uid}_*.jpg"))
-    if not files:
-        bot.reply_to(message, "مبعتش صور لسه")
-        return
-    try:
-        imgs = [Image.open(f).convert("RGB") for f in files]
-        out = f"pdf_{uid}.pdf"
-        imgs[0].save(out, save_all=True, append_images=imgs[1:])
-        with open(out, "rb") as doc:
-            bot.send_document(message.chat.id, doc, caption="اتفضل الـ PDF 🖼️")
-        for f in files:
-            try: os.remove(f)
-            except: pass
-        try: os.remove(out)
-        except: pass
-    except Exception as e:
-        bot.reply_to(message, "مشكلة: " + str(e))
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    uid = str(message.from_user.id)
-    if get_mode(uid) != "pdf":
-        bot.reply_to(message, "دوس على زرار صور لـ PDF الاول من /start")
-        return
-    try:
-        fid = message.photo[-1].file_id
-        info = bot.get_file(fid)
-        data = bot.download_file(info.file_path)
-        n = len(glob.glob(f"pdf_{uid}_*.jpg"))
-        with open(f"pdf_{uid}_{n}.jpg", "wb") as f:
-            f.write(data)
-        bot.reply_to(message, "اتحفظت ✅ - ابعت اللي بعدها او اكتب done")
-    except Exception as e:
-        bot.reply_to(message, "مشكلة: " + str(e))
-
-@bot.message_handler(func=lambda m: True)
-def handle_link(message):
-    if not message.text: return
-    text = message.text.strip()
-    uid = str(message.from_user.id)
-    mode = get_mode(uid)
-
-    # لو الرسالة امر زي /vip /start /broadcast - سيبها للهاندلر بتاعها، متحسبهاش بحث
-    if text.startswith("/"):
-        return
-
-    # لو الادمن مستني ايدي VIP - دي اول حاجة قبل البحث
-    if uid in WAITING_VIP_ID:
-        WAITING_VIP_ID.discard(uid)
-        clean = re.sub(r'[^0-9]', '', text)
-        if clean.isdigit() and len(clean) >= 5:
-            do_make_vip(clean, message)
-            set_mode(uid, "video")
-            return
+        base = f"/tmp/{uid}_{int(time.time())}"
+        out = piped_download(vid, base, want_audio=want_audio)
+        if want_audio:
+            with open(out, "rb") as f:
+                await q.message.reply_audio(f)
         else:
-            bot.reply_to(message, "الايدي مش مظبوط، ابعت ارقام بس 👇")
-            WAITING_VIP_ID.add(uid)
-            return
-
-    if uid in WAITING_UNVIP_ID:
-        WAITING_UNVIP_ID.discard(uid)
-        clean = re.sub(r'[^0-9]', '', text)
-        if clean.isdigit():
-            db = load_db()
-            db["vip"].pop(clean, None)
-            save_db(db)
-            set_mode(uid, "video")
-            bot.reply_to(message, "اتشال منه VIP ❌")
-            return
-
-    if text.lower() in ["done", "تم", "خلصت", "تم ✅", "done ✅"]:
-        return done_pdf(message)
-
-    is_link = text.startswith("http")
-
-    if mode == "search" and not is_link:
-        bot.reply_to(message, "🔍 بدور على: " + text + " استنى...")
+            with open(out, "rb") as f:
+                await q.message.reply_video(f)
         try:
-            res = piped_search(text)
-            if not res or not res.get("id"):
-                bot.reply_to(message, "ملقيتش حاجة بالاسم ده")
-                return
-            base = f"search_{uid}_{int(time.time())}"
-            out = piped_download(res["id"], base, want_audio=True)
-            if os.path.getsize(out) > 45*1024*1024:
-                bot.reply_to(message, "الملف كبير اوي على تيليجرام")
-                cleanup_base(base); return
-            with open(out, "rb") as a:
-                bot.send_audio(message.chat.id, a, caption=f"لقيتهالك 😎\n{res.get('title','')}", reply_markup=fav_kb())
-            cleanup_base(base)
-            add_point(uid)
-            save_history(uid, text)
-        except Exception as e:
-            bot.reply_to(message, "مشكلة في البحث: " + str(e)[:300])
-        return
+            os.remove(out)
+        except:
+            pass
+    except Exception as e:
+        await q.message.reply_text(f"❌ فشل: {e}")
 
-    if not is_link:
-        bot.reply_to(message, T(uid, "ابعت لينك صحيح يا صاحبي، واختار النوع من /start الاول", "Send valid link, choose from /start first"))
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    u = get_user(uid)
+    text = (update.message.text or "").strip()
+    if not text:
         return
-
-    if is_youtube_url(text):
-        vid = extract_youtube_id(text)
-        if not vid:
-            bot.reply_to(message, "لينك يوتيوب مش مظبوط")
+    if u.get("support_mode") or u.get("state") == "support":
+        u["support_mode"] = False
+        u["state"] = "home"
+        save_data()
+        await update.message.reply_text(T(uid, "support_sent"))
+        if ADMIN_ID != 0:
+            try:
+                await context.bot.send_message(chat_id=ADMIN_ID, text=f"📩 رسالة دعم جديدة\nمن: {update.effective_user.first_name} ({uid})\n\n{text}\n\nللرد: /reply {uid} رسالتك")
+            except Exception as e:
+                print(f"Support forward failed: {e}")
+        return
+    if u.get("state") == "search":
+        u["state"] = "home"
+        save_data()
+        msg = await update.message.reply_text(T(uid, "searching", q=text))
+        res = piped_search(text)
+        if not res:
+            await msg.edit_text(T(uid, "not_found"))
             return
-        if mode == "mp3":
-            bot.reply_to(message, "🎵 تمام، بحوّل لـ MP3 ⏳")
-            base = f"audio_{uid}_{int(time.time())}"
-            try:
-                out = piped_download(vid, base, want_audio=True)
-                if os.path.getsize(out) > 45*1024*1024:
-                    bot.reply_to(message, "الملف كبير اوي على تيليجرام")
-                    cleanup_base(base); return
-                with open(out, "rb") as a:
-                    bot.send_audio(message.chat.id, a, caption="اتفضل الـ MP3 يا وحش 🔥", reply_markup=fav_kb())
-                cleanup_base(base)
-                add_point(uid)
-                save_history(uid, text)
-            except Exception as e:
-                bot.reply_to(message, "الخطأ الحقيقي MP3: " + str(e)[:300])
-        else:
-            max_h = 720 if mode == "q720" else 1080 if mode == "q1080" else None
-            bot.reply_to(message, "📥 تمام، بحمل الفيديو ⏳")
-            base = f"video_{uid}_{int(time.time())}"
-            try:
-                out = piped_download(vid, base, want_audio=False, max_height=max_h)
-                if os.path.getsize(out) > 45*1024*1024:
-                    bot.reply_to(message, "الفيديو كبير اوي على تيليجرام، جرب جودة 720")
-                    cleanup_base(base); return
-                with open(out, "rb") as v:
-                    bot.send_video(message.chat.id, v, caption="اتفضل الفيديو يا وحش 🔥", reply_markup=fav_kb())
-                cleanup_base(base)
-                add_point(uid)
-                save_history(uid, text)
-            except Exception as e:
-                bot.reply_to(message, "الخطأ الحقيقي: " + str(e)[:300])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎵 MP3", callback_data=f"dl_audio_{res['id']}"), InlineKeyboardButton("🎬 فيديو", callback_data=f"dl_video_{res['id']}")]])
+        await msg.edit_text(T(uid, "choose_format", title=res.get("title", text)), reply_markup=kb)
         return
-
-    if mode == "mp3":
-        bot.reply_to(message, "🎵 تمام، بحوّل لـ MP3 ⏳")
-        base = f"audio_{uid}_{int(time.time())}"
+    if "http" in text and any(x in text for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"]):
+        await update.message.reply_text(T(uid, "downloading"))
         try:
+            base = f"/tmp/{uid}_{int(time.time())}"
             files = ytdlp_download(text, base, "bestaudio/best", is_audio=True)
             if files:
-                if os.path.getsize(files[0]) > 45*1024*1024:
-                    bot.reply_to(message, "الملف كبير اوي على تيليجرام")
-                    cleanup_base(base); return
-                with open(files[0], "rb") as a:
-                    bot.send_audio(message.chat.id, a, caption="اتفضل الـ MP3 يا وحش 🔥", reply_markup=fav_kb())
-                cleanup_base(base)
-                add_point(uid)
-                save_history(uid, text)
+                with open(files[0], "rb") as f:
+                    await update.message.reply_audio(f, title="Audio")
+                try:
+                    os.remove(files[0])
+                except:
+                    pass
             else:
-                bot.reply_to(message, "مش عارف احول اللينك ده")
+                await update.message.reply_text("❌ فشل التحميل")
         except Exception as e:
-            bot.reply_to(message, "الخطأ الحقيقي MP3: " + str(e)[:300])
-    else:
-        if mode == "q720":
-            fmt = "best[height<=720][ext=mp4]/best[height<=720]/18/22/mp4/best"
-        elif mode == "q1080":
-            fmt = "best[height<=1080][ext=mp4]/best[height<=1080]/22/18/mp4/best"
-        else:
-            fmt = "18/22/mp4/best[ext=mp4]/best"
-        bot.reply_to(message, "📥 تمام، بحمل الفيديو ⏳")
-        base = f"video_{uid}_{int(time.time())}"
-        try:
-            files = ytdlp_download(text, base, fmt, is_audio=False)
-            if files:
-                if os.path.getsize(files[0]) > 45*1024*1024:
-                    bot.reply_to(message, "الفيديو كبير اوي على تيليجرام، جرب جودة 720")
-                    cleanup_base(base); return
-                with open(files[0], "rb") as v:
-                    if files[0].endswith(".mp4"):
-                        bot.send_video(message.chat.id, v, caption="اتفضل الفيديو يا وحش 🔥", reply_markup=fav_kb())
-                    else:
-                        bot.send_document(message.chat.id, v, caption="اتفضل الفيديو يا وحش 🔥", reply_markup=fav_kb())
-                cleanup_base(base)
-                add_point(uid)
-                save_history(uid, text)
-            else:
-                bot.reply_to(message, "مش عارف احمل اللينك ده")
-        except Exception as e:
-            bot.reply_to(message, "الخطأ الحقيقي: " + str(e)[:300])
+            await update.message.reply_text(f"❌ فشل التحميل: {e}")
+        return
+    await update.message.reply_text(T(uid, "welcome"), reply_markup=main_keyboard(uid))
 
-print("البوت هيشتغل دلوقتي...")
-while True:
+async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if uid != ADMIN_ID or ADMIN_ID == 0:
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("استخدم: /reply 123456 رسالتك")
+        return
+    target = context.args[0]
+    msg = " ".join(context.args[1:])
     try:
-        bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+        await context.bot.send_message(chat_id=int(target), text=T(int(target), "support_reply", msg=msg))
+        await update.message.reply_text("✅ اتبعت")
     except Exception as e:
-        print("اعادة تشغيل بعد خطأ: " + str(e))
-        traceback.print_exc()
-        time.sleep(5)
+        await update.message.reply_text(f"Error: {e}")
+
+def main():
+    if not BOT_TOKEN:
+        print("ERROR: BOT_TOKEN missing")
+        return
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("vip", vip_cmd))
+    app.add_handler(CommandHandler("reply", reply_cmd))
+    app.add_handler(CallbackQueryHandler(handle_dl, pattern="^dl_"))
+    app.add_handler(CallbackQueryHandler(handle_button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    print("Bot started")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()

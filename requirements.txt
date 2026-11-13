@@ -1,5 +1,5 @@
 pyTelegramBotAPI
 Flask
 Pillow
-yt-dlp>=2024.10.7
 curl-cffi
+https://github.com/yt-dlp/yt-dlp/archive/master.tar.gz

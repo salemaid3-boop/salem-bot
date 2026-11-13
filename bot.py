@@ -264,7 +264,7 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720"):
         "no_warnings": True,
         "nocheckcertificate": True,
         "socket_timeout": 90,
-        "extractor_args": {"youtube": {"player_client": ["android", "ios"]}},
+        "extractor_args": {"youtube": {"player_client": ["android", "ios", "mweb", "tv"]}},
         "merge_output_format": "mp4",
         "http_headers": {"User-Agent": "Mozilla/5.0"},
     }

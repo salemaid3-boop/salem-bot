@@ -22,7 +22,11 @@ POINTS_FOR_VIP = 100
 INVITES_FOR_VIP = 50
 POINTS_PER_INVITE = 5
 
-# سيرفرات Piped - لو واحد وقع التاني يشتغل
+# بيحفظ مين مستني منه ايدي VIP
+WAITING_VIP_ID = set()
+# بيحفظ مين مستني منه ايدي UNVIP
+WAITING_UNVIP_ID = set()
+
 PIPED_INSTANCES = [
     "https://piped.video",
     "https://piped.privacyredirect.com",
@@ -145,6 +149,15 @@ def make_vip_auto(uid, db, reason=""):
     except: pass
     return True
 
+def do_make_vip(target_id, admin_msg):
+    db = load_db()
+    db["vip"][str(target_id)] = time.time() + VIP_DAYS*86400
+    save_db(db)
+    bot.reply_to(admin_msg, f"✅ بقى VIP 👑 لمدة {VIP_DAYS} يوم\n🆔 الايدي: {target_id}")
+    try:
+        bot.send_message(int(target_id), f"🎉 مبروك! بقيت VIP 👑\n\n📅 لمدة {VIP_DAYS} يوم\n💎 تحميل بدون حدود - شامل كل حاجة\n⚡ اولوية في التحميل\n💳 دفعت: {VIP_PRICE}")
+    except: pass
+
 def add_point(uid):
     db = load_db()
     db["points"][str(uid)] = db["points"].get(str(uid), 0) + 1
@@ -198,9 +211,7 @@ def safe_edit(call, text, reply_markup=None):
             bot.send_message(call.message.chat.id, text, reply_markup=reply_markup)
         except: pass
 
-# ===== محرك يوتيوب الجديد - من غير yt-dlp =====
 def extract_youtube_id(url_or_text):
-    # بيطلع الـ ID من اي لينك يوتيوب
     m = re.search(r'(?:v=|/shorts/|/embed/|youtu\.be/|/live/)([A-Za-z0-9_-]{11})', url_or_text)
     if m:
         return m.group(1)
@@ -210,7 +221,6 @@ def is_youtube_url(url):
     return "youtube.com" in url or "youtu.be" in url
 
 def piped_search(query):
-    # بحث يوتيوب من Piped - بيرجع اول فيديو
     for inst in PIPED_INSTANCES:
         try:
             r = requests.get(f"{inst}/api/v1/search", params={"q": query, "filter": "videos"}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
@@ -218,14 +228,15 @@ def piped_search(query):
                 data = r.json()
                 if data:
                     first = data[0]
-                    return {"id": first.get("url", "").split("v=")[-1].split("/watch?v=")[-1], "title": first.get("title", ""), "url": first.get("url", "")}
+                    url = first.get("url", "")
+                    vid = url.split("v=")[-1] if "v=" in url else url.strip("/").split("/")[-1]
+                    return {"id": vid, "title": first.get("title", ""), "url": url}
         except Exception as e:
             print(f"Piped search {inst} failed: {e}")
             continue
     return None
 
 def piped_download(video_id, base, want_audio=False, max_height=None):
-    # تحميل من Piped - بيرجع اسم الملف
     last_err = ""
     for inst in PIPED_INSTANCES:
         try:
@@ -236,20 +247,14 @@ def piped_download(video_id, base, want_audio=False, max_height=None):
             download_url = None
             ext = ".mp4"
             if want_audio:
-                # اختار احسن صوت
                 audios = data.get("audioStreams", [])
                 if not audios:
                     continue
-                # رتب بالجودة
                 audios = sorted(audios, key=lambda x: x.get("bitrate", 0), reverse=True)
                 download_url = audios[0].get("url")
-                ext = ".m4a" if "m4a" in audios[0].get("mimeType", "") else ".mp3"
-                if "webm" in audios[0].get("mimeType", ""):
-                    ext = ".webm"
+                ext = ".m4a"
             else:
-                # فيديو + صوت مع بعض لو موجود
                 vids = data.get("videoStreams", [])
-                # دور على فيديو فيه صوت - itag 18, 22
                 best = None
                 for v in vids:
                     if v.get("itag") in [18, 22] or (v.get("videoOnly") == False and "mp4" in v.get("mimeType", "")):
@@ -262,34 +267,26 @@ def piped_download(video_id, base, want_audio=False, max_height=None):
                         best = v
                         break
                 if not best and vids:
-                    # خد اي فيديو mp4
                     for v in vids:
                         if "mp4" in v.get("mimeType", "") and not v.get("videoOnly"):
                             best = v
                             break
+                if not best and vids:
+                    best = vids[0]
                 if not best:
-                    # اخر حل: خد اول فيديو
-                    if vids:
-                        best = vids[0]
-                    else:
-                        continue
+                    continue
                 download_url = best.get("url")
                 ext = ".mp4"
             if not download_url:
                 continue
-            # نزل الملف
             out_file = base + ext
             with requests.get(download_url, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                 if resp.status_code != 200:
                     continue
-                total = 0
                 with open(out_file, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                            total += len(chunk)
-                            if total > 48*1024*1024:
-                                break
             if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
                 return out_file
         except Exception as e:
@@ -299,7 +296,6 @@ def piped_download(video_id, base, want_audio=False, max_height=None):
     raise Exception(last_err or "Piped كله واقع، جرب تاني بعد دقيقة")
 
 def ytdlp_download(url, base, fmt, is_audio=False):
-    # ده للتيك توك والانستا والفيس - لسه شغال على yt-dlp
     tries = []
     if is_audio:
         tries.append({'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
@@ -330,6 +326,8 @@ def cleanup_base(base):
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = str(message.from_user.id)
+    WAITING_VIP_ID.discard(uid)
+    WAITING_UNVIP_ID.discard(uid)
     db = load_db()
     is_new = uid not in db["users"]
     if is_new:
@@ -382,28 +380,36 @@ def broadcast(message):
 
 @bot.message_handler(commands=['vip'])
 def make_vip(message):
-    if not is_admin(message.from_user.id): return
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "اكتب /vip + الايدي")
+    if not is_admin(message.from_user.id):
+        bot.reply_to(message, "مش ليك يا صاحبي")
         return
-    db = load_db()
-    db["vip"][parts[1]] = time.time() + VIP_DAYS*86400
-    save_db(db)
-    bot.reply_to(message, f"بقى VIP 👑 لمدة {VIP_DAYS} يوم")
-    try:
-        bot.send_message(int(parts[1]), f"🎉 مبروك! بقيت VIP 👑\n\n📅 لمدة {VIP_DAYS} يوم\n💎 تحميل بدون حدود - شامل كل حاجة\n⚡ اولوية في التحميل\n💳 دفعت: {VIP_PRICE}")
-    except: pass
+    uid = str(message.from_user.id)
+    parts = message.text.split()
+    # لو بعت /vip 1159182662 في رسالة واحدة - دي الصح
+    if len(parts) >= 2 and parts[1].isdigit():
+        set_mode(uid, "video")
+        do_make_vip(parts[1], message)
+        return
+    # لو بعت /vip لوحده - استنى الايدي في الرسالة الجاية
+    WAITING_VIP_ID.add(uid)
+    set_mode(uid, "video")
+    bot.reply_to(message, "تمام، ابعت الايدي لوحده في الرسالة الجاية 👇\nمثال:\n1159182662")
 
 @bot.message_handler(commands=['unvip'])
 def remove_vip(message):
     if not is_admin(message.from_user.id): return
+    uid = str(message.from_user.id)
     parts = message.text.split()
-    if len(parts) < 2: return
-    db = load_db()
-    db["vip"].pop(parts[1], None)
-    save_db(db)
-    bot.reply_to(message, "اتشال منه VIP ❌")
+    if len(parts) >= 2 and parts[1].isdigit():
+        db = load_db()
+        db["vip"].pop(parts[1], None)
+        save_db(db)
+        set_mode(uid, "video")
+        bot.reply_to(message, "اتشال منه VIP ❌")
+        return
+    WAITING_UNVIP_ID.add(uid)
+    set_mode(uid, "video")
+    bot.reply_to(message, "ابعت الايدي لوحده في الرسالة الجاية 👇")
 
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(call):
@@ -413,6 +419,8 @@ def callbacks(call):
         if data.startswith("mode_"):
             m = data.replace("mode_", "")
             set_mode(uid, m)
+            WAITING_VIP_ID.discard(uid)
+            WAITING_UNVIP_ID.discard(uid)
             bot.answer_callback_query(call.id, "تمام ✅")
             if m == "search":
                 bot.send_message(call.message.chat.id, T(uid, "🔍 اكتب اسم الاغنية او الفيديو اللي بتدور عليه", "🔍 Type song or video name"))
@@ -558,12 +566,39 @@ def handle_link(message):
     uid = str(message.from_user.id)
     mode = get_mode(uid)
 
-    if text.lower() in ["done", "تم", "خلصت", "/done", "تم ✅", "done ✅"]:
+    # لو الرسالة امر زي /vip /start /broadcast - سيبها للهاندلر بتاعها، متحسبهاش بحث
+    if text.startswith("/"):
+        return
+
+    # لو الادمن مستني ايدي VIP - دي اول حاجة قبل البحث
+    if uid in WAITING_VIP_ID:
+        WAITING_VIP_ID.discard(uid)
+        clean = re.sub(r'[^0-9]', '', text)
+        if clean.isdigit() and len(clean) >= 5:
+            do_make_vip(clean, message)
+            set_mode(uid, "video")
+            return
+        else:
+            bot.reply_to(message, "الايدي مش مظبوط، ابعت ارقام بس 👇")
+            WAITING_VIP_ID.add(uid)
+            return
+
+    if uid in WAITING_UNVIP_ID:
+        WAITING_UNVIP_ID.discard(uid)
+        clean = re.sub(r'[^0-9]', '', text)
+        if clean.isdigit():
+            db = load_db()
+            db["vip"].pop(clean, None)
+            save_db(db)
+            set_mode(uid, "video")
+            bot.reply_to(message, "اتشال منه VIP ❌")
+            return
+
+    if text.lower() in ["done", "تم", "خلصت", "تم ✅", "done ✅"]:
         return done_pdf(message)
 
     is_link = text.startswith("http")
 
-    # البحث بالاسم - من Piped مش من yt-dlp
     if mode == "search" and not is_link:
         bot.reply_to(message, "🔍 بدور على: " + text + " استنى...")
         try:
@@ -589,7 +624,6 @@ def handle_link(message):
         bot.reply_to(message, T(uid, "ابعت لينك صحيح يا صاحبي، واختار النوع من /start الاول", "Send valid link, choose from /start first"))
         return
 
-    # لو يوتيوب - استخدم Piped
     if is_youtube_url(text):
         vid = extract_youtube_id(text)
         if not vid:
@@ -628,7 +662,6 @@ def handle_link(message):
                 bot.reply_to(message, "الخطأ الحقيقي: " + str(e)[:300])
         return
 
-    # تيك توك / انستا / فيس - لسه yt-dlp
     if mode == "mp3":
         bot.reply_to(message, "🎵 تمام، بحوّل لـ MP3 ⏳")
         base = f"audio_{uid}_{int(time.time())}"

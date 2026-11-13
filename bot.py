@@ -1,4 +1,9 @@
-import os, json, re, time, glob, requests
+import os
+import json
+import re
+import time
+import glob
+import requests
 import yt_dlp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -8,6 +13,7 @@ try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or 0)
 except:
     ADMIN_ID = 0
+
 DATA_FILE = "users.json"
 PIPED_INSTANCES = ["https://piped.video", "https://piped.privacyredirect.com", "https://piped.adminforge.de", "https://piped.mha.fi"]
 
@@ -27,7 +33,7 @@ def save_data():
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(DATA, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"save failed: {e}")
+        print("save failed: " + str(e))
 
 DATA = load_data()
 
@@ -48,48 +54,50 @@ def get_user(uid):
     return u
 
 def is_vip(uid):
-    u = get_user(uid)
     try:
-        return float(u.get("vip", 0)) > time.time()
+        return float(get_user(uid).get("vip", 0)) > time.time()
     except:
         return False
 
 TEXTS = {
     "ar": {
-        "welcome": "👋 اهلا بيك في بوت التحميل\nاختار من تحت:",
-        "vip_status": "👑 VIP - فاضل {d} يوم",
-        "not_vip": "❌ مش VIP",
-        "search_prompt": "🔍 اكتب اسم الاغنية او الفيديو:",
-        "searching": "🔍 بدور على: {q} استنى...",
-        "not_found": "❌ ملقيتش حاجة بالاسم ده، جرب اسم تاني",
-        "downloading": "⏳ بحمل... استنى شوية",
-        "choose_lang": "🌐 اختار اللغة / Choose Language:",
-        "support_prompt": "✍️ اكتب رسالتك للدعم:",
-        "support_sent": "✅ رسالتك وصلت للدعم، هنرد عليك قريب",
-        "support_reply": "💬 رد الدعم:\n\n{msg}",
-        "help": "📖 ابعت لينك فيديو من يوتيوب / تيك توك / انستا / فيس بوك، او دوس بحث ودور بالاسم",
-        "choose_format": "🎵 {title}\nاختار:",
+        "welcome": "Welcome - Choose:",
+        "vip_status": "VIP - {d} days left",
+        "not_vip": "Not VIP",
+        "search_prompt": "Type song or video name:",
+        "searching": "Searching for: {q} wait...",
+        "not_found": "Nothing found, try another name",
+        "downloading": "Downloading... wait",
+        "choose_lang": "Choose Language:",
+        "support_prompt": "Write your message to support:",
+        "support_sent": "Your message sent to support",
+        "support_reply": "Support reply:\n\n{msg}",
+        "help": "Send a video link from YouTube / TikTok / Insta / Facebook, or tap Search",
+        "choose_format": "Title: {title}\nChoose:",
+        "vip_done": "Now VIP for 30 days",
+        "vip_congrats": "Congrats! You are VIP",
     },
     "en": {
-        "welcome": "👋 Welcome to Download Bot\nChoose:",
-        "vip_status": "👑 VIP - {d} days left",
-        "not_vip": "❌ Not VIP",
-        "search_prompt": "🔍 Type song or video name:",
-        "searching": "🔍 Searching for: {q} wait...",
-        "not_found": "❌ Nothing found, try another name",
-        "downloading": "⏳ Downloading... wait",
-        "choose_lang": "🌐 Choose Language:",
-        "support_prompt": "✍️ Write your message to support:",
-        "support_sent": "✅ Your message sent to support",
-        "support_reply": "💬 Support reply:\n\n{msg}",
-        "help": "📖 Send a video link from YouTube / TikTok / Insta / Facebook, or tap Search",
-        "choose_format": "🎵 {title}\nChoose:",
+        "welcome": "Welcome - Choose:",
+        "vip_status": "VIP - {d} days left",
+        "not_vip": "Not VIP",
+        "search_prompt": "Type song or video name:",
+        "searching": "Searching for: {q} wait...",
+        "not_found": "Nothing found, try another name",
+        "downloading": "Downloading... wait",
+        "choose_lang": "Choose Language:",
+        "support_prompt": "Write your message to support:",
+        "support_sent": "Your message sent to support",
+        "support_reply": "Support reply:\n\n{msg}",
+        "help": "Send a video link from YouTube / TikTok / Insta / Facebook, or tap Search",
+        "choose_format": "Title: {title}\nChoose:",
+        "vip_done": "Now VIP for 30 days",
+        "vip_congrats": "Congrats! You are VIP",
     }
 }
 
 def T(uid, key, **kwargs):
-    u = get_user(uid)
-    lang = u.get("lang", "ar")
+    lang = get_user(uid).get("lang", "ar")
     if lang not in TEXTS:
         lang = "ar"
     txt = TEXTS[lang].get(key, key)
@@ -100,21 +108,14 @@ def T(uid, key, **kwargs):
 
 def main_keyboard(uid):
     u = get_user(uid)
-    lang = u.get("lang", "ar")
     if is_vip(uid):
         days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
         vip_txt = T(uid, "vip_status", d=days)
     else:
         vip_txt = T(uid, "not_vip")
-    if lang == "ar":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍 بحث", callback_data="search"), InlineKeyboardButton("🎵 تحميل", callback_data="help")],
-            [InlineKeyboardButton("🌐 اللغة", callback_data="lang"), InlineKeyboardButton("🛠 الدعم", callback_data="support")],
-            [InlineKeyboardButton(vip_txt, callback_data="vip_info")]
-        ])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔍 Search", callback_data="search"), InlineKeyboardButton("🎵 Download", callback_data="help")],
-        [InlineKeyboardButton("🌐 Language", callback_data="lang"), InlineKeyboardButton("🛠 Support", callback_data="support")],
+        [InlineKeyboardButton("Search", callback_data="search"), InlineKeyboardButton("Download", callback_data="help")],
+        [InlineKeyboardButton("Language", callback_data="lang"), InlineKeyboardButton("Support", callback_data="support")],
         [InlineKeyboardButton(vip_txt, callback_data="vip_info")]
     ])
 
@@ -122,8 +123,8 @@ def piped_search(query):
     import urllib.parse
     try:
         q = urllib.parse.quote(query)
-        yt_url = f"https://www.youtube.com/results?search_query={q}"
-        proxy_url = f"https://api.allorigins.win/raw?url={urllib.parse.quote(yt_url)}"
+        yt_url = "https://www.youtube.com/results?search_query=" + q
+        proxy_url = "https://api.allorigins.win/raw?url=" + urllib.parse.quote(yt_url)
         r = requests.get(proxy_url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200 and "videoId" in r.text:
             ids = re.findall(r'"videoId":"([A-Za-z0-9_-]{11})"', r.text)
@@ -134,18 +135,18 @@ def piped_search(query):
                     seen.add(vid)
                     uniq.append(vid)
             if uniq:
-                return {"id": uniq[0], "title": query, "url": f"/watch?v={uniq[0]}"}
+                return {"id": uniq[0], "title": query, "url": "/watch?v=" + uniq[0]}
     except Exception as e:
-        print(f"AllOrigins failed: {e}")
+        print("AllOrigins failed: " + str(e))
     try:
-        q = urllib.parse.quote(f"site:youtube.com {query}")
-        r = requests.get(f"https://html.duckduckgo.com/html/?q={q}", timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        q = urllib.parse.quote("site:youtube.com " + query)
+        r = requests.get("https://html.duckduckgo.com/html/?q=" + q, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             m = re.findall(r'watch\?v=([A-Za-z0-9_-]{11})', r.text)
             if m:
-                return {"id": m[0], "title": query, "url": f"/watch?v={m[0]}"}
+                return {"id": m[0], "title": query, "url": "/watch?v=" + m[0]}
     except Exception as e:
-        print(f"DuckDuckGo failed: {e}")
+        print("DuckDuckGo failed: " + str(e))
     try:
         r = requests.get("https://yt.lemnoslife.com/noKey/search", params={"part": "snippet", "q": query, "maxResults": 1}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
@@ -153,12 +154,12 @@ def piped_search(query):
             if items:
                 vid = items[0].get("id", {}).get("videoId", "")
                 if vid:
-                    return {"id": vid, "title": items[0].get("snippet", {}).get("title", query), "url": f"/watch?v={vid}"}
+                    return {"id": vid, "title": items[0].get("snippet", {}).get("title", query), "url": "/watch?v=" + vid}
     except Exception as e:
-        print(f"LemnosLife failed: {e}")
+        print("LemnosLife failed: " + str(e))
     for inst in PIPED_INSTANCES:
         try:
-            r = requests.get(f"{inst}/api/v1/search", params={"q": query, "filter": "all"}, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.get(inst + "/api/v1/search", params={"q": query, "filter": "all"}, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code == 200:
                 data = r.json()
                 items = data if isinstance(data, list) else data.get("items", [])
@@ -183,10 +184,11 @@ def ytdlp_download(url, base, fmt, is_audio=False):
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
     files = glob.glob(base + ".*")
+    files = [f for f in files if not f.endswith(".part")]
     return files
 
 def piped_download(video_id, base, want_audio=False):
-    yt_url = f"https://www.youtube.com/watch?v={video_id}"
+    yt_url = "https://www.youtube.com/watch?v=" + video_id
     try:
         r = requests.post("https://api.cobalt.tools/", json={"url": yt_url, "isAudioOnly": want_audio, "downloadMode": "auto", "filenameStyle": "basic"}, timeout=30, headers={"Accept": "application/json", "Content-Type": "application/json"})
         if r.status_code == 200:
@@ -203,10 +205,10 @@ def piped_download(video_id, base, want_audio=False):
                         if os.path.exists(out) and os.path.getsize(out) > 1000:
                             return out
     except Exception as e:
-        print(f"Cobalt failed: {e}")
+        print("Cobalt failed: " + str(e))
     for inst in PIPED_INSTANCES:
         try:
-            r = requests.get(f"{inst}/api/v1/streams/{video_id}", timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.get(inst + "/api/v1/streams/" + video_id, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code != 200:
                 continue
             data = r.json()
@@ -255,25 +257,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    u = get_user(uid)
     if not context.args:
-        await update.message.reply_text("ابعت الايدي بعد /vip - مثال: /vip 123456" if u.get("lang") == "ar" else "Send ID after /vip")
+        await update.message.reply_text("Send ID after /vip - Example: /vip 123456")
         return
     if uid != ADMIN_ID and ADMIN_ID != 0:
-        await update.message.reply_text("مش مسموح" if u.get("lang") == "ar" else "Not allowed")
+        await update.message.reply_text("Not allowed")
         return
     try:
-        target = str(context.args[0])
+        target = str(context.args[0]).strip()
+        if not target.isdigit():
+            await update.message.reply_text("ID must be numbers only")
+            return
         tu = get_user(target)
         tu["vip"] = time.time() + 30 * 86400
         save_data()
-        await update.message.reply_text("✅ بقى VIP لمدة 30 يوم")
+        await update.message.reply_text("VIP done for 30 days")
         try:
-            await context.bot.send_message(chat_id=int(target), text="🎉 مبروك! بقيت VIP")
+            await context.bot.send_message(chat_id=int(target), text="Congrats! You are VIP")
         except:
             pass
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text("Error: " + str(e))
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -283,6 +287,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = q.data or ""
     if data == "search":
         u["state"] = "search"
+        u["support_mode"] = False
         save_data()
         await q.message.reply_text(T(uid, "search_prompt"))
     elif data == "help":
@@ -290,18 +295,20 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "lang":
         u["state"] = "home"
         save_data()
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🇪🇬 عربي", callback_data="set_lang_ar"), InlineKeyboardButton("🇺🇸 English", callback_data="set_lang_en")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Arabic", callback_data="set_lang_ar"), InlineKeyboardButton("English", callback_data="set_lang_en")]])
         await q.message.reply_text(T(uid, "choose_lang"), reply_markup=kb)
     elif data == "set_lang_ar":
         u["lang"] = "ar"
         u["state"] = "home"
+        u["support_mode"] = False
         save_data()
-        await q.message.reply_text("✅ اتغيرت للعربي", reply_markup=main_keyboard(uid))
+        await q.message.reply_text("Language changed", reply_markup=main_keyboard(uid))
     elif data == "set_lang_en":
         u["lang"] = "en"
         u["state"] = "home"
+        u["support_mode"] = False
         save_data()
-        await q.message.reply_text("✅ Changed to English", reply_markup=main_keyboard(uid))
+        await q.message.reply_text("Language changed", reply_markup=main_keyboard(uid))
     elif data == "support":
         u["state"] = "support"
         u["support_mode"] = True
@@ -310,7 +317,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "vip_info":
         if is_vip(uid):
             days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
-            await q.message.reply_text(T(uid, "vip_status", d=days))
+            await q.message.reply_text(T(uid, "vip_status", d=max(1, days)))
         else:
             await q.message.reply_text(T(uid, "not_vip"))
 
@@ -329,7 +336,7 @@ async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await q.message.reply_text(T(uid, "downloading"))
     try:
-        base = f"/tmp/{uid}_{int(time.time())}"
+        base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
         out = piped_download(vid, base, want_audio=want_audio)
         if want_audio:
             with open(out, "rb") as f:
@@ -342,7 +349,7 @@ async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     except Exception as e:
-        await q.message.reply_text(f"❌ فشل: {e}")
+        await q.message.reply_text("Failed: " + str(e))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -357,9 +364,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(T(uid, "support_sent"))
         if ADMIN_ID != 0:
             try:
-                await context.bot.send_message(chat_id=ADMIN_ID, text=f"📩 رسالة دعم جديدة\nمن: {update.effective_user.first_name} ({uid})\n\n{text}\n\nللرد: /reply {uid} رسالتك")
+                name = update.effective_user.first_name or ""
+                msg_text = "New support message\nFrom: " + name + " (" + str(uid) + ")\n\n" + text + "\n\nTo reply: /reply " + str(uid) + " your message"
+                await context.bot.send_message(chat_id=ADMIN_ID, text=msg_text)
             except Exception as e:
-                print(f"Support forward failed: {e}")
+                print("Support forward failed: " + str(e))
         return
     if u.get("state") == "search":
         u["state"] = "home"
@@ -369,13 +378,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not res:
             await msg.edit_text(T(uid, "not_found"))
             return
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎵 MP3", callback_data=f"dl_audio_{res['id']}"), InlineKeyboardButton("🎬 فيديو", callback_data=f"dl_video_{res['id']}")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("MP3", callback_data="dl_audio_" + res["id"]), InlineKeyboardButton("Video", callback_data="dl_video_" + res["id"])]])
         await msg.edit_text(T(uid, "choose_format", title=res.get("title", text)), reply_markup=kb)
         return
     if "http" in text and any(x in text for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"]):
         await update.message.reply_text(T(uid, "downloading"))
         try:
-            base = f"/tmp/{uid}_{int(time.time())}"
+            base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
             files = ytdlp_download(text, base, "bestaudio/best", is_audio=True)
             if files:
                 with open(files[0], "rb") as f:
@@ -385,9 +394,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except:
                     pass
             else:
-                await update.message.reply_text("❌ فشل التحميل")
+                await update.message.reply_text("Download failed")
         except Exception as e:
-            await update.message.reply_text(f"❌ فشل التحميل: {e}")
+            await update.message.reply_text("Download failed: " + str(e))
         return
     await update.message.reply_text(T(uid, "welcome"), reply_markup=main_keyboard(uid))
 
@@ -396,15 +405,18 @@ async def reply_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if uid != ADMIN_ID or ADMIN_ID == 0:
         return
     if len(context.args) < 2:
-        await update.message.reply_text("استخدم: /reply 123456 رسالتك")
+        await update.message.reply_text("Use: /reply 123456 your message")
         return
     target = context.args[0]
+    if not target.isdigit():
+        await update.message.reply_text("ID wrong")
+        return
     msg = " ".join(context.args[1:])
     try:
         await context.bot.send_message(chat_id=int(target), text=T(int(target), "support_reply", msg=msg))
-        await update.message.reply_text("✅ اتبعت")
+        await update.message.reply_text("Sent")
     except Exception as e:
-        await update.message.reply_text(f"Error: {e}")
+        await update.message.reply_text("Error: " + str(e))
 
 def main():
     if not BOT_TOKEN:

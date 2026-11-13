@@ -1,4 +1,4 @@
-import os, json, time, threading, glob, sys, traceback
+import os, json, time, threading, glob, sys, traceback, re, requests
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -22,6 +22,15 @@ POINTS_FOR_VIP = 100
 INVITES_FOR_VIP = 50
 POINTS_PER_INVITE = 5
 
+# سيرفرات Piped - لو واحد وقع التاني يشتغل
+PIPED_INSTANCES = [
+    "https://piped.video",
+    "https://piped.privacyredirect.com",
+    "https://piped.adminforge.de",
+    "https://inv.nadeko.net",
+    "https://piped.mha.fi",
+]
+
 try:
     from PIL import Image
     HAS_PIL = True
@@ -33,7 +42,6 @@ try:
     HAS_YTDLP = True
 except:
     HAS_YTDLP = False
-    print("yt-dlp مش متثبت!")
 
 try:
     from flask import Flask
@@ -47,30 +55,6 @@ try:
     threading.Thread(target=run_flask, daemon=True).start()
 except Exception as e:
     print(f"Flask error: {e}")
-
-def get_ydl_opts(base, fmt):
-    return {
-        'format': fmt,
-        'outtmpl': base + ".%(ext)s",
-        'noplaylist': True, 'quiet': True, 'no_warnings': True,
-        'merge_output_format': 'mp4', 'no_check_certificate': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        'impersonate': 'chrome',
-        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        'retries': 3, 'fragment_retries': 3, 'socket_timeout': 30,
-    }
-
-def get_ydl_opts_audio(base):
-    return {
-        'format': 'bestaudio/best',
-        'outtmpl': base + ".%(ext)s",
-        'noplaylist': True, 'quiet': True, 'no_warnings': True,
-        'no_check_certificate': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
-        'impersonate': 'chrome',
-        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        'retries': 3,
-    }
 
 def default_db():
     return {"users": {}, "fav": {}, "history": {}, "points": {}, "vip": {}, "invites": {}, "mode": {}, "lang": {}, "last_dl": {}}
@@ -212,6 +196,135 @@ def safe_edit(call, text, reply_markup=None):
     except:
         try:
             bot.send_message(call.message.chat.id, text, reply_markup=reply_markup)
+        except: pass
+
+# ===== محرك يوتيوب الجديد - من غير yt-dlp =====
+def extract_youtube_id(url_or_text):
+    # بيطلع الـ ID من اي لينك يوتيوب
+    m = re.search(r'(?:v=|/shorts/|/embed/|youtu\.be/|/live/)([A-Za-z0-9_-]{11})', url_or_text)
+    if m:
+        return m.group(1)
+    return None
+
+def is_youtube_url(url):
+    return "youtube.com" in url or "youtu.be" in url
+
+def piped_search(query):
+    # بحث يوتيوب من Piped - بيرجع اول فيديو
+    for inst in PIPED_INSTANCES:
+        try:
+            r = requests.get(f"{inst}/api/v1/search", params={"q": query, "filter": "videos"}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code == 200:
+                data = r.json()
+                if data:
+                    first = data[0]
+                    return {"id": first.get("url", "").split("v=")[-1].split("/watch?v=")[-1], "title": first.get("title", ""), "url": first.get("url", "")}
+        except Exception as e:
+            print(f"Piped search {inst} failed: {e}")
+            continue
+    return None
+
+def piped_download(video_id, base, want_audio=False, max_height=None):
+    # تحميل من Piped - بيرجع اسم الملف
+    last_err = ""
+    for inst in PIPED_INSTANCES:
+        try:
+            r = requests.get(f"{inst}/api/v1/streams/{video_id}", timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            download_url = None
+            ext = ".mp4"
+            if want_audio:
+                # اختار احسن صوت
+                audios = data.get("audioStreams", [])
+                if not audios:
+                    continue
+                # رتب بالجودة
+                audios = sorted(audios, key=lambda x: x.get("bitrate", 0), reverse=True)
+                download_url = audios[0].get("url")
+                ext = ".m4a" if "m4a" in audios[0].get("mimeType", "") else ".mp3"
+                if "webm" in audios[0].get("mimeType", ""):
+                    ext = ".webm"
+            else:
+                # فيديو + صوت مع بعض لو موجود
+                vids = data.get("videoStreams", [])
+                # دور على فيديو فيه صوت - itag 18, 22
+                best = None
+                for v in vids:
+                    if v.get("itag") in [18, 22] or (v.get("videoOnly") == False and "mp4" in v.get("mimeType", "")):
+                        if max_height and v.get("quality", ""):
+                            try:
+                                q = int(v.get("quality", "0").replace("p", ""))
+                                if q > max_height:
+                                    continue
+                            except: pass
+                        best = v
+                        break
+                if not best and vids:
+                    # خد اي فيديو mp4
+                    for v in vids:
+                        if "mp4" in v.get("mimeType", "") and not v.get("videoOnly"):
+                            best = v
+                            break
+                if not best:
+                    # اخر حل: خد اول فيديو
+                    if vids:
+                        best = vids[0]
+                    else:
+                        continue
+                download_url = best.get("url")
+                ext = ".mp4"
+            if not download_url:
+                continue
+            # نزل الملف
+            out_file = base + ext
+            with requests.get(download_url, stream=True, timeout=60, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                if resp.status_code != 200:
+                    continue
+                total = 0
+                with open(out_file, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            total += len(chunk)
+                            if total > 48*1024*1024:
+                                break
+            if os.path.exists(out_file) and os.path.getsize(out_file) > 1000:
+                return out_file
+        except Exception as e:
+            last_err = str(e)
+            print(f"Piped download {inst} failed: {e}")
+            continue
+    raise Exception(last_err or "Piped كله واقع، جرب تاني بعد دقيقة")
+
+def ytdlp_download(url, base, fmt, is_audio=False):
+    # ده للتيك توك والانستا والفيس - لسه شغال على yt-dlp
+    tries = []
+    if is_audio:
+        tries.append({'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
+    else:
+        tries.append({'format': fmt, 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True, 'merge_output_format': 'mp4'})
+        tries.append({'format': 'best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True})
+    last_err = ""
+    for opts in tries:
+        try:
+            for f in glob.glob(base + "*"):
+                try: os.remove(f)
+                except: pass
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            files = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
+            if files:
+                return files
+        except Exception as e:
+            last_err = str(e)
+            continue
+    raise Exception(last_err)
+
+def cleanup_base(base):
+    for f in glob.glob(base + "*"):
+        try: os.remove(f)
         except: pass
 
 @bot.message_handler(commands=['start'])
@@ -438,34 +551,6 @@ def handle_photo(message):
     except Exception as e:
         bot.reply_to(message, "مشكلة: " + str(e))
 
-def cleanup_base(base):
-    for f in glob.glob(base + "*"):
-        try: os.remove(f)
-        except: pass
-
-def download_with_fallback(url, base, fmt, is_audio=False):
-    tries = []
-    if is_audio:
-        tries.append(get_ydl_opts_audio(base))
-        tries.append({'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
-    else:
-        tries.append(get_ydl_opts(base, fmt))
-        tries.append({'format': fmt, 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True, 'merge_output_format': 'mp4'})
-        tries.append({'format': 'best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
-    last_err = ""
-    for opts in tries:
-        try:
-            cleanup_base(base)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            files = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
-            if files:
-                return files
-        except Exception as e:
-            last_err = str(e)
-            continue
-    raise Exception(last_err)
-
 @bot.message_handler(func=lambda m: True)
 def handle_link(message):
     if not message.text: return
@@ -478,22 +563,24 @@ def handle_link(message):
 
     is_link = text.startswith("http")
 
+    # البحث بالاسم - من Piped مش من yt-dlp
     if mode == "search" and not is_link:
         bot.reply_to(message, "🔍 بدور على: " + text + " استنى...")
         try:
-            base = f"search_{uid}_{int(time.time())}"
-            files = download_with_fallback(f"ytsearch1:{text}", base, "bestaudio/best", is_audio=True)
-            if files:
-                if os.path.getsize(files[0]) > 45*1024*1024:
-                    bot.reply_to(message, "الملف كبير اوي على تيليجرام")
-                    cleanup_base(base); return
-                with open(files[0], "rb") as a:
-                    bot.send_audio(message.chat.id, a, caption="لقيتهالك 😎", reply_markup=fav_kb())
-                cleanup_base(base)
-                add_point(uid)
-                save_history(uid, text)
-            else:
+            res = piped_search(text)
+            if not res or not res.get("id"):
                 bot.reply_to(message, "ملقيتش حاجة بالاسم ده")
+                return
+            base = f"search_{uid}_{int(time.time())}"
+            out = piped_download(res["id"], base, want_audio=True)
+            if os.path.getsize(out) > 45*1024*1024:
+                bot.reply_to(message, "الملف كبير اوي على تيليجرام")
+                cleanup_base(base); return
+            with open(out, "rb") as a:
+                bot.send_audio(message.chat.id, a, caption=f"لقيتهالك 😎\n{res.get('title','')}", reply_markup=fav_kb())
+            cleanup_base(base)
+            add_point(uid)
+            save_history(uid, text)
         except Exception as e:
             bot.reply_to(message, "مشكلة في البحث: " + str(e)[:300])
         return
@@ -502,11 +589,51 @@ def handle_link(message):
         bot.reply_to(message, T(uid, "ابعت لينك صحيح يا صاحبي، واختار النوع من /start الاول", "Send valid link, choose from /start first"))
         return
 
+    # لو يوتيوب - استخدم Piped
+    if is_youtube_url(text):
+        vid = extract_youtube_id(text)
+        if not vid:
+            bot.reply_to(message, "لينك يوتيوب مش مظبوط")
+            return
+        if mode == "mp3":
+            bot.reply_to(message, "🎵 تمام، بحوّل لـ MP3 ⏳")
+            base = f"audio_{uid}_{int(time.time())}"
+            try:
+                out = piped_download(vid, base, want_audio=True)
+                if os.path.getsize(out) > 45*1024*1024:
+                    bot.reply_to(message, "الملف كبير اوي على تيليجرام")
+                    cleanup_base(base); return
+                with open(out, "rb") as a:
+                    bot.send_audio(message.chat.id, a, caption="اتفضل الـ MP3 يا وحش 🔥", reply_markup=fav_kb())
+                cleanup_base(base)
+                add_point(uid)
+                save_history(uid, text)
+            except Exception as e:
+                bot.reply_to(message, "الخطأ الحقيقي MP3: " + str(e)[:300])
+        else:
+            max_h = 720 if mode == "q720" else 1080 if mode == "q1080" else None
+            bot.reply_to(message, "📥 تمام، بحمل الفيديو ⏳")
+            base = f"video_{uid}_{int(time.time())}"
+            try:
+                out = piped_download(vid, base, want_audio=False, max_height=max_h)
+                if os.path.getsize(out) > 45*1024*1024:
+                    bot.reply_to(message, "الفيديو كبير اوي على تيليجرام، جرب جودة 720")
+                    cleanup_base(base); return
+                with open(out, "rb") as v:
+                    bot.send_video(message.chat.id, v, caption="اتفضل الفيديو يا وحش 🔥", reply_markup=fav_kb())
+                cleanup_base(base)
+                add_point(uid)
+                save_history(uid, text)
+            except Exception as e:
+                bot.reply_to(message, "الخطأ الحقيقي: " + str(e)[:300])
+        return
+
+    # تيك توك / انستا / فيس - لسه yt-dlp
     if mode == "mp3":
-        bot.reply_to(message, T(uid, "🎵 تمام، بحوّل لـ MP3 ⏳", "🎵 Converting to MP3 ⏳"))
+        bot.reply_to(message, "🎵 تمام، بحوّل لـ MP3 ⏳")
         base = f"audio_{uid}_{int(time.time())}"
         try:
-            files = download_with_fallback(text, base, "bestaudio/best", is_audio=True)
+            files = ytdlp_download(text, base, "bestaudio/best", is_audio=True)
             if files:
                 if os.path.getsize(files[0]) > 45*1024*1024:
                     bot.reply_to(message, "الملف كبير اوي على تيليجرام")
@@ -517,7 +644,7 @@ def handle_link(message):
                 add_point(uid)
                 save_history(uid, text)
             else:
-                bot.reply_to(message, T(uid, "مش عارف احول اللينك ده", "Can't convert this link"))
+                bot.reply_to(message, "مش عارف احول اللينك ده")
         except Exception as e:
             bot.reply_to(message, "الخطأ الحقيقي MP3: " + str(e)[:300])
     else:
@@ -527,10 +654,10 @@ def handle_link(message):
             fmt = "best[height<=1080][ext=mp4]/best[height<=1080]/22/18/mp4/best"
         else:
             fmt = "18/22/mp4/best[ext=mp4]/best"
-        bot.reply_to(message, T(uid, "📥 تمام، بحمل الفيديو ⏳", "📥 Downloading video ⏳"))
+        bot.reply_to(message, "📥 تمام، بحمل الفيديو ⏳")
         base = f"video_{uid}_{int(time.time())}"
         try:
-            files = download_with_fallback(text, base, fmt, is_audio=False)
+            files = ytdlp_download(text, base, fmt, is_audio=False)
             if files:
                 if os.path.getsize(files[0]) > 45*1024*1024:
                     bot.reply_to(message, "الفيديو كبير اوي على تيليجرام، جرب جودة 720")
@@ -544,7 +671,7 @@ def handle_link(message):
                 add_point(uid)
                 save_history(uid, text)
             else:
-                bot.reply_to(message, T(uid, "مش عارف احمل اللينك ده", "Can't download this link"))
+                bot.reply_to(message, "مش عارف احمل اللينك ده")
         except Exception as e:
             bot.reply_to(message, "الخطأ الحقيقي: " + str(e)[:300])
 

@@ -48,6 +48,30 @@ try:
 except Exception as e:
     print(f"Flask error: {e}")
 
+def get_ydl_opts(base, fmt):
+    return {
+        'format': fmt,
+        'outtmpl': base + ".%(ext)s",
+        'noplaylist': True, 'quiet': True, 'no_warnings': True,
+        'merge_output_format': 'mp4', 'no_check_certificate': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        'impersonate': 'chrome',
+        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'retries': 3, 'fragment_retries': 3, 'socket_timeout': 30,
+    }
+
+def get_ydl_opts_audio(base):
+    return {
+        'format': 'bestaudio/best',
+        'outtmpl': base + ".%(ext)s",
+        'noplaylist': True, 'quiet': True, 'no_warnings': True,
+        'no_check_certificate': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        'impersonate': 'chrome',
+        'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'retries': 3,
+    }
+
 def default_db():
     return {"users": {}, "fav": {}, "history": {}, "points": {}, "vip": {}, "invites": {}, "mode": {}, "lang": {}, "last_dl": {}}
 
@@ -81,6 +105,15 @@ def save_db(d):
 def is_admin(uid):
     return str(uid) == str(ADMIN_ID)
 
+def get_lang(uid):
+    db = load_db()
+    return db["lang"].get(str(uid), "ar")
+
+def set_lang(uid, lang):
+    db = load_db()
+    db["lang"][str(uid)] = lang
+    save_db(db)
+
 def get_mode(uid):
     db = load_db()
     return db["mode"].get(str(uid), "video")
@@ -91,8 +124,7 @@ def set_mode(uid, mode):
     save_db(db)
 
 def T(uid, ar, en):
-    db = load_db()
-    lang = db["lang"].get(str(uid), "ar")
+    lang = get_lang(uid)
     return ar if lang == "ar" else en
 
 def get_points(uid, db=None):
@@ -117,8 +149,7 @@ def vip_left_days(uid, db=None):
     if db is None: db = load_db()
     exp = db["vip"].get(str(uid), 0)
     if not exp: return 0
-    left = int((exp - time.time()) / 86400) + 1
-    return max(left, 0)
+    return max(int((exp - time.time()) / 86400) + 1, 0)
 
 def make_vip_auto(uid, db, reason=""):
     if db["vip"].get(str(uid), 0) > time.time():
@@ -143,7 +174,7 @@ def save_history(uid, link):
     h = db["history"].get(str(uid), [])
     h.insert(0, link[:80])
     db["history"][str(uid)] = h[:20]
-    db["last_dl"][str(uid)] = link[:200]
+    db["last_dl"][str(uid)] = link[:300]
     save_db(db)
 
 def home_kb(uid):
@@ -187,25 +218,27 @@ def safe_edit(call, text, reply_markup=None):
 def start(message):
     uid = str(message.from_user.id)
     db = load_db()
-    if uid not in db["users"]:
+    is_new = uid not in db["users"]
+    if is_new:
         db["users"][uid] = {"name": message.from_user.first_name, "username": message.from_user.username, "time": time.time()}
+        save_db(db)
         parts = message.text.split()
         if len(parts) > 1:
             inviter = parts[1].strip()
-            if inviter != uid and inviter in db["users"]:
-                db["points"][inviter] = db["points"].get(inviter, 0) + POINTS_PER_INVITE
-                db["invites"][inviter] = db["invites"].get(inviter, 0) + 1
-                inv_count = db["invites"][inviter]
-                save_db(db)
-                if inv_count >= INVITES_FOR_VIP and not is_vip(inviter, db):
-                    db = load_db()
-                    make_vip_auto(inviter, db, f"🔥 جبت {INVITES_FOR_VIP} شخص بدعوتك - تستاهل VIP ببلاش!")
+            db2 = load_db()
+            if inviter != uid and inviter in db2["users"]:
+                db2["points"][inviter] = db2["points"].get(inviter, 0) + POINTS_PER_INVITE
+                db2["invites"][inviter] = db2["invites"].get(inviter, 0) + 1
+                inv_count = db2["invites"][inviter]
+                save_db(db2)
+                if inv_count >= INVITES_FOR_VIP and not is_vip(inviter, db2):
+                    db3 = load_db()
+                    make_vip_auto(inviter, db3, f"🔥 جبت {INVITES_FOR_VIP} شخص بدعوتك - تستاهل VIP ببلاش!")
                 else:
                     try:
-                        bot.send_message(int(inviter), f"🎁 حد دخل بدعوتك!\n\n+{POINTS_PER_INVITE} نقط ✨\n🎁 نقطك: {db['points'][inviter]} / 100\n👥 دعواتك: {inv_count} / 50\n\nلو وصلت 50 دعوة هتبقى VIP ببلاش 👑")
+                        bot.send_message(int(inviter), f"🎁 حد دخل بدعوتك!\n\n+{POINTS_PER_INVITE} نقط ✨\n🎁 نقطك: {db2['points'][inviter]} / 100\n👥 دعواتك: {inv_count} / 50\n\nلو وصلت 50 دعوة هتبقى VIP ببلاش 👑")
                     except: pass
-        save_db(db)
-    bot.reply_to(message, welcome_text(message.from_user, db), reply_markup=home_kb(uid))
+    bot.reply_to(message, welcome_text(message.from_user), reply_markup=home_kb(uid))
 
 @bot.message_handler(commands=['admin'])
 def admin_cmd(message):
@@ -271,7 +304,7 @@ def callbacks(call):
             if m == "search":
                 bot.send_message(call.message.chat.id, T(uid, "🔍 اكتب اسم الاغنية او الفيديو اللي بتدور عليه", "🔍 Type song or video name"))
             elif m == "pdf":
-                bot.send_message(call.message.chat.id, T(uid, "🖼️ ابعت الصور ورا بعض، وبعدين اكتب /done او done عشان احولهم PDF", "🖼️ Send images then /done for PDF"))
+                bot.send_message(call.message.chat.id, T(uid, "🖼️ ابعت الصور ورا بعض، وبعدين اكتب done عشان احولهم PDF", "🖼️ Send images then done for PDF"))
             else:
                 bot.send_message(call.message.chat.id, T(uid, "✅ تمام يا وحش، ابعت اللينك دلوقتي 👇", "✅ OK, send link now 👇"))
         elif data == "lang_menu":
@@ -280,11 +313,11 @@ def callbacks(call):
             kb.add(InlineKeyboardButton("🔙 رجوع", callback_data="back_home"))
             safe_edit(call, T(uid, "🌐 اختار اللغة:", "🌐 Choose language:"), kb)
         elif data == "lang_ar":
-            db = load_db(); db["lang"][uid] = "ar"; save_db(db)
+            set_lang(uid, "ar")
             bot.answer_callback_query(call.id, "عربي 🇪🇬")
             safe_edit(call, welcome_text(call.from_user), home_kb(uid))
         elif data == "lang_en":
-            db = load_db(); db["lang"][uid] = "en"; save_db(db)
+            set_lang(uid, "en")
             bot.answer_callback_query(call.id, "English 🇺🇸")
             safe_edit(call, welcome_text(call.from_user), home_kb(uid))
         elif data == "back_home":
@@ -410,6 +443,29 @@ def cleanup_base(base):
         try: os.remove(f)
         except: pass
 
+def download_with_fallback(url, base, fmt, is_audio=False):
+    tries = []
+    if is_audio:
+        tries.append(get_ydl_opts_audio(base))
+        tries.append({'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
+    else:
+        tries.append(get_ydl_opts(base, fmt))
+        tries.append({'format': fmt, 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True, 'merge_output_format': 'mp4'})
+        tries.append({'format': 'best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True})
+    last_err = ""
+    for opts in tries:
+        try:
+            cleanup_base(base)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            files = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
+            if files:
+                return files
+        except Exception as e:
+            last_err = str(e)
+            continue
+    raise Exception(last_err)
+
 @bot.message_handler(func=lambda m: True)
 def handle_link(message):
     if not message.text: return
@@ -426,10 +482,7 @@ def handle_link(message):
         bot.reply_to(message, "🔍 بدور على: " + text + " استنى...")
         try:
             base = f"search_{uid}_{int(time.time())}"
-            opts = {'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([f"ytsearch1:{text}"])
-            files = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
+            files = download_with_fallback(f"ytsearch1:{text}", base, "bestaudio/best", is_audio=True)
             if files:
                 if os.path.getsize(files[0]) > 45*1024*1024:
                     bot.reply_to(message, "الملف كبير اوي على تيليجرام")
@@ -442,7 +495,7 @@ def handle_link(message):
             else:
                 bot.reply_to(message, "ملقيتش حاجة بالاسم ده")
         except Exception as e:
-            bot.reply_to(message, "مشكلة في البحث: " + str(e)[:250])
+            bot.reply_to(message, "مشكلة في البحث: " + str(e)[:300])
         return
 
     if not is_link:
@@ -453,10 +506,7 @@ def handle_link(message):
         bot.reply_to(message, T(uid, "🎵 تمام، بحوّل لـ MP3 ⏳", "🎵 Converting to MP3 ⏳"))
         base = f"audio_{uid}_{int(time.time())}"
         try:
-            opts = {'format': 'bestaudio/best', 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([text])
-            files = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
+            files = download_with_fallback(text, base, "bestaudio/best", is_audio=True)
             if files:
                 if os.path.getsize(files[0]) > 45*1024*1024:
                     bot.reply_to(message, "الملف كبير اوي على تيليجرام")
@@ -480,16 +530,13 @@ def handle_link(message):
         bot.reply_to(message, T(uid, "📥 تمام، بحمل الفيديو ⏳", "📥 Downloading video ⏳"))
         base = f"video_{uid}_{int(time.time())}"
         try:
-            opts = {'format': fmt, 'outtmpl': base + ".%(ext)s", 'noplaylist': True, 'quiet': True, 'no_warnings': True, 'merge_output_format': 'mp4', 'no_check_certificate': True}
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([text])
-            vids = [f for f in os.listdir(".") if f.startswith(base) and not f.endswith(".part")]
-            if vids:
-                if os.path.getsize(vids[0]) > 45*1024*1024:
+            files = download_with_fallback(text, base, fmt, is_audio=False)
+            if files:
+                if os.path.getsize(files[0]) > 45*1024*1024:
                     bot.reply_to(message, "الفيديو كبير اوي على تيليجرام، جرب جودة 720")
                     cleanup_base(base); return
-                with open(vids[0], "rb") as v:
-                    if vids[0].endswith(".mp4"):
+                with open(files[0], "rb") as v:
+                    if files[0].endswith(".mp4"):
                         bot.send_video(message.chat.id, v, caption="اتفضل الفيديو يا وحش 🔥", reply_markup=fav_kb())
                     else:
                         bot.send_document(message.chat.id, v, caption="اتفضل الفيديو يا وحش 🔥", reply_markup=fav_kb())

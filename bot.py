@@ -502,12 +502,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["pdf_photos"] = []; u["pdf_mode"] = False; save_data()
     elif data == "help_mp3" or data == "help_video" or data == "help":
         await q.message.reply_text(T(uid, "help_text"))
-    elif data == "vip_info":
+        elif data == "vip_info":
         if is_vip(uid):
             days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
-            await q.message.reply_text(f"👑 {T(uid, 'vip_left')} {max(1, days)} {T(uid, 'vip_days')}")
+            await q.message.reply_text(f"👑 انت VIP 👑\n\nفاضل في VIP {max(1, days)} يوم\n\n⚡ تحميل اسرع\n🎵 جودة 1080 كاملة\n🚫 من غير اعلانات\n\nشكرا انك معانا ❤️")
         else:
-            await q.message.reply_text(T(uid, "not_vip"))
+            kb_vip = InlineKeyboardMarkup([[InlineKeyboardButton("📞 كلم الادمن للاشتراك", url="https://t.me/ccccbcv")], [InlineKeyboardButton("⬅️ رجوع", callback_data="home")]])
+            await q.message.reply_text(f"👑 VIP - نزل\n\nانت لسه مش VIP\n\n✨ مميزات VIP لمدة شهر:\n⚡ تحميل اسرع من غير انتظار\n🎵 جودة 1080 كاملة\n🚫 من غير اعلانات\n⭐ اولوية في الدعم\n\n💰 السعر: 50 جنيه / شهر\n\n📌 عشان تشترك:\n1- حول 50 جنيه\n2- دوس على زرار كلم الادمن تحت\n3- ابعتله الاي دي ده:\n🆔 {uid}\n\nوهيفعلك VIP في نفس اليوم 👑\n\n🎁 نقطك: {u.get('points', 0)} من 100\n👥 دعواتك: {u.get('invites', 0)} من 50", reply_markup=kb_vip)
     elif data == "points_info":
         link = f"https://t.me/{context.bot.username}?start=inv_{uid}"
         await q.message.reply_text(f"🎁 {T(uid, 'points')}: {u.get('points', 0)} / 100\n👥 {T(uid, 'invites')}: {u.get('invites', 0)} / 50\n\n🔗 لينك دعوتك:\n{link}")

@@ -259,14 +259,13 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720"):
             fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
     opts = {
         "format": fmt,
-        "cookiefile": "cookies.txt",
+        #"cookiefile": "cookies.txt"
         "outtmpl": base + ".%(ext)s",
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": True,
         "socket_timeout": 90,
-        "extractor_args": {"youtube": {"player_client": ["android", "ios", "mweb", "tv"]}},
-        "merge_output_format": "mp4",
+        "extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["configs", "web"]}},
         "http_headers": {"User-Agent": "Mozilla/5.0"},
     }
     if want_audio:

@@ -524,7 +524,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(T(uid, "fav_empty")); return
         txt = "\n".join(favs[-10:])
         await q.message.reply_text(f"⭐ {T(uid, 'fav_btn')}:\n{txt}")
-   elif data == "admin_info":
+       elif data == "points_info":
+        await q.message.reply_text(f"🎁 نقاطك: {u.get('points', 0)}")
+    elif data == "history_info":
+        await q.message.reply_text("📜 سجل النقاط فارغ")
+    elif data == "fav_info":
+        await q.message.reply_text("⭐ المفضلة فارغة")
+    elif data == "admin_info":
         if int(uid) != ADMIN_ID:
             await q.message.reply_text(T(uid, "help_text")); return
         total = len(DATA["users"])
@@ -534,17 +540,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 احصائيات", callback_data="admin_stats")],
             [InlineKeyboardButton("⬅️ رجوع", callback_data="home")],
         ])
-        await q.message.reply_text(
-            f"👑 ━━━ لوحة تحكم الادمن ━━━ 👑\n\n"
-            f"👥 عدد المستخدمين: {total}\n"
-            f"💎 عدد الـ VIP: {vip_count}\n"
-            f"🆔 الاي دي بتاعك: `{ADMIN_ID}`\n\n"
-            f"اختار من تحت 👇",
-            reply_markup=kb_admin)
+        await q.message.reply_text(f"👑 لوحة تحكم الادمن\n\n👥 عدد المستخدمين: {total}\n💎 عدد الـ VIP: {vip_count}", reply_markup=kb_admin)
     elif data == "admin_addvip":
         if int(uid) != ADMIN_ID: return
         reset_modes(u); u["state"] = "admin_addvip"; save_data()
-        await q.message.reply_text("💎 ابعت الاي دي بتاع المستخدم اللي عايز تفعله VIP\nمثال: `1159182662`")
+        await q.message.reply_text("💎 ابعت الاي دي بتاع المستخدم اللي عايز تفعله VIP")
     elif data == "admin_delvip":
         if int(uid) != ADMIN_ID: return
         reset_modes(u); u["state"] = "admin_delvip"; save_data()
@@ -554,15 +554,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = len(DATA["users"])
         vip_count = sum(1 for x in DATA["users"].values() if isinstance(x, dict) and float(x.get("vip", 0)) > time.time())
         total_points = sum(int(x.get("points", 0)) for x in DATA["users"].values() if isinstance(x, dict))
-        await q.message.reply_text(f"📊 احصائيات البوت\n\n👥 المستخدمين: {total}\n💎 VIP: {vip_count}\n🎁 مجموع النقط: {total_points}") تحكم\n👥 عدد المستخدمين: {total}\n🆔 الاي دي بتاعك: {ADMIN_ID}")
-    elif data == "home":
-        name = q.from_user.first_name or ""
-        reset_modes(u); save_data()
-        await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
-    elif data == "convert_mp3_last":
-        url = u.get("last_link", "")
-        if not url:
-            await q.message.reply_text(T(uid, "no_link_mp3")); return
+        await q.message.reply_text(f"📊 احصائيات البوت\n\n👥 المستخدمين: {total}\n💎 VIP: {vip_count}\n🎁 مجموع النقط: {total_points}") "no_link_mp3")); return
         await q.message.reply_text(T(uid, "converting_mp3"))
         base = "/tmp/" + str(uid) + "_" + str(int(time.time())) + "_mp3"
         files = download_with_ytdlp(url, base, want_audio=True, quality="720")

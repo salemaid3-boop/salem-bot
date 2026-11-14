@@ -634,6 +634,37 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u.get("lang"):
         await update.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
+            # تفعيل / الغاء VIP من الادمن
+    if u.get("state") == "admin_addvip" and int(uid) == ADMIN_ID:
+        target = text.strip()
+        if not target.isdigit():
+            await update.message.reply_text("ابعت اي دي ارقام بس")
+            return
+        tu = get_user(target)
+        tu["vip"] = time.time() + 30 * 86400
+        u["state"] = "home"
+        save_data()
+        await update.message.reply_text(f"✅ تم تفعيل VIP للمستخدم {target} لمدة 30 يوم")
+        try:
+            await context.bot.send_message(chat_id=int(target), text=T(int(target), "vip_congrats"))
+        except:
+            pass
+        name2 = user.first_name or ""
+        await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
+        return
+    if u.get("state") == "admin_delvip" and int(uid) == ADMIN_ID:
+        target = text.strip()
+        if not target.isdigit():
+            await update.message.reply_text("ابعت اي دي ارقام بس")
+            return
+        tu = get_user(target)
+        tu["vip"] = 0
+        u["state"] = "home"
+        save_data()
+        await update.message.reply_text(f"❌ تم الغاء VIP من المستخدم {target}")
+        name2 = user.first_name or ""
+        await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
+        return
     if u.get("support_mode") or u.get("state") == "support":
         u["support_mode"] = False; u["state"] = "home"; save_data()
         await update.message.reply_text(f"✅ {T(uid, 'support_sent')}")

@@ -524,7 +524,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(T(uid, "fav_empty")); return
         txt = "\n".join(favs[-10:])
         await q.message.reply_text(f"⭐ {T(uid, 'fav_btn')}:\n{txt}")
-        elif data == "admin_info":
+   elif data == "admin_info":
         if int(uid) != ADMIN_ID:
             await q.message.reply_text(T(uid, "help_text")); return
         total = len(DATA["users"])

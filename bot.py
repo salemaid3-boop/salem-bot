@@ -119,6 +119,16 @@ TEXTS = {
         "vip_congrats": "مبروك، بقيت VIP",
         "back": "رجوع",
         "home": "القايمة الرئيسية",
+        # رسايل جديدة - اضافة فقط بدون مسح اي حاجة قديمة
+        "mp3_info": "عشان تحمل MP3، ابعت لينك الفيديو وبعدين اختار MP3، او دور بالاسم واختار MP3",
+        "video_info": "عشان تحمل فيديو، ابعت لينك الفيديو وبعدين اختار الجودة، او دور بالاسم واختار الجودة",
+        "quality_720_info": "تمام، اخترت جودة 720. ابعت لينك دلوقتي او دور بالاسم، وهحملهولك 720",
+        "quality_1080_info": "تمام، اخترت جودة 1080. ابعت لينك دلوقتي او دور بالاسم، وهحملهولك 1080",
+        "pdf_info_text": "ميزة صور لـ PDF لسه بتتجهز، ابعت لينك صورة دلوقتي وهنحولها قريب",
+        "fav_info_text": "مفضلتك فاضية لسه، لما تحمل حاجة هتظهر هنا",
+        "history_info_text": "سجلك فاضي لسه، لما تحمل حاجة هتظهر هنا",
+        "admin_info_text": "لوحة التحكم للادمن بس. لو انت الادمن ابعت /vip او /reply",
+        "unknown_text": "مش فاهم رسالتك، ابعت لينك او دوس بحث بالاسم",
     },
     "en": {
         "choose_lang_title": "Choose your language",
@@ -161,6 +171,16 @@ TEXTS = {
         "vip_congrats": "Congrats, you are VIP",
         "back": "Back",
         "home": "Main Menu",
+        # New texts - additions only
+        "mp3_info": "To download MP3, send a video link then choose MP3, or search by name and choose MP3",
+        "video_info": "To download video, send a video link then choose quality, or search by name and choose quality",
+        "quality_720_info": "OK, you chose 720 quality. Send a link now or search by name, I will download it in 720",
+        "quality_1080_info": "OK, you chose 1080 quality. Send a link now or search by name, I will download it in 1080",
+        "pdf_info_text": "Images to PDF is coming soon, send an image link for now",
+        "fav_info_text": "Your favorites is empty, it will show here after you download something",
+        "history_info_text": "Your history is empty, it will show here after you download something",
+        "admin_info_text": "Admin panel is for admin only. If you are admin send /vip or /reply",
+        "unknown_text": "I did not understand, send a link or tap Search",
     }
 }
 
@@ -186,7 +206,8 @@ def main_keyboard(uid):
         vip_txt = f"👑 {T(uid, 'vip_btn')}"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="help_mp3"), InlineKeyboardButton(f"📥 {T(uid, 'download_video')}", callback_data="help_video")],
-        [InlineKeyboardButton(f"🎬 {T(uid, 'quality_1080')}", callback_data="help_video"), InlineKeyboardButton(f"🎬 {T(uid, 'quality_720')}", callback_data="help_video")],
+        # FIX: كل زرار جودة بقى ليه callback لوحده بدل ما الاتنين كانوا help_video
+        [InlineKeyboardButton(f"🎬 {T(uid, 'quality_1080')}", callback_data="quality_1080"), InlineKeyboardButton(f"🎬 {T(uid, 'quality_720')}", callback_data="quality_720")],
         [InlineKeyboardButton(f"🔍 {T(uid, 'search_btn')}", callback_data="search"), InlineKeyboardButton(f"🖼️ {T(uid, 'pdf_btn')}", callback_data="pdf_info")],
         [InlineKeyboardButton(f"⭐ {T(uid, 'fav_btn')}", callback_data="fav_info"), InlineKeyboardButton(f"📂 {T(uid, 'history_btn')}", callback_data="history_info")],
         [InlineKeyboardButton(f"🎁 {T(uid, 'points_btn')}", callback_data="points_info"), InlineKeyboardButton(f"{vip_txt}", callback_data="vip_info")],
@@ -362,31 +383,61 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         u["support_mode"] = False
         save_data()
         await q.message.reply_text(f"🔍 {T(uid, 'search_prompt')}")
+        return
     elif data == "lang":
         await q.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
+        return
     elif data == "support":
         u["state"] = "support"
         u["support_mode"] = True
         save_data()
         await q.message.reply_text(f"📞 {T(uid, 'support_prompt')}")
-    elif data == "help_mp3" or data == "help_video" or data == "help":
+        return
+    # FIX: فصلت كل زرار لوحده، مفيش زرارين بيردوا نفس الرد تاني
+    elif data == "help_mp3":
+        await q.message.reply_text(T(uid, "mp3_info"))
+        return
+    elif data == "help_video":
+        await q.message.reply_text(T(uid, "video_info"))
+        return
+    elif data == "quality_720":
+        await q.message.reply_text(T(uid, "quality_720_info"))
+        return
+    elif data == "quality_1080":
+        await q.message.reply_text(T(uid, "quality_1080_info"))
+        return
+    elif data == "help":
         await q.message.reply_text(T(uid, "help_text"))
+        return
     elif data == "vip_info":
         if is_vip(uid):
             days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
             await q.message.reply_text(f"👑 {T(uid, 'vip_left')} {max(1, days)} {T(uid, 'vip_days')}")
         else:
             await q.message.reply_text(T(uid, "not_vip"))
+        return
     elif data == "points_info":
         await q.message.reply_text(f"🎁 {T(uid, 'points')}: {u.get('points', 0)} / 100\n👥 {T(uid, 'invites')}: {u.get('invites', 0)} / 50")
-    elif data in ["pdf_info", "fav_info", "history_info", "admin_info"]:
-        await q.message.reply_text(T(uid, "help_text"))
+        return
+    elif data == "pdf_info":
+        await q.message.reply_text(T(uid, "pdf_info_text"))
+        return
+    elif data == "fav_info":
+        await q.message.reply_text(T(uid, "fav_info_text"))
+        return
+    elif data == "history_info":
+        await q.message.reply_text(T(uid, "history_info_text"))
+        return
+    elif data == "admin_info":
+        await q.message.reply_text(T(uid, "admin_info_text"))
+        return
     elif data == "home":
         name = q.from_user.first_name or ""
         u["state"] = "home"
         u["support_mode"] = False
         save_data()
         await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
+        return
 
 async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -511,8 +562,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"{T(uid, 'download_failed')}\n{str(e)}")
         return
-    name = update.effective_user.first_name or ""
-    await update.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
+    # FIX: بدل ما كان بيبعت القايمة الرئيسية على اي كلام، دلوقتي بيبعت رسالة توضيحية واحدة بس
+    await update.message.reply_text(T(uid, "unknown_text"))
+    return
 
 def main():
     if not BOT_TOKEN:

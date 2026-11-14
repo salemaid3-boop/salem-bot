@@ -499,10 +499,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print("pdf err: " + str(e))
             await q.message.reply_text(T(uid, "download_failed"))
-        u["pdf_photos"] = []; u["pdf_mode"] = False; save_data()
+                    u["pdf_photos"] = []; u["pdf_mode"] = False; save_data()
     elif data == "help_mp3" or data == "help_video" or data == "help":
         await q.message.reply_text(T(uid, "help_text"))
-        elif data == "vip_info":
+    elif data == "vip_info":
         if is_vip(uid):
             days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
             await q.message.reply_text(f"👑 انت VIP 👑\n\nفاضل في VIP {max(1, days)} يوم\n\n⚡ تحميل اسرع\n🎵 جودة 1080 كاملة\n🚫 من غير اعلانات\n\nشكرا انك معانا ❤️")

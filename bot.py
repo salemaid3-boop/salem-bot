@@ -95,13 +95,11 @@ def translate_text(text, target="en"):
     text = text.strip()
     if not text:
         return text
-    # لو النص اصلا باللغة المطلوبة رجعه زي ما هو
     has_ar = any('\u0600' <= c <= '\u06FF' for c in text)
     if target == "en" and not has_ar:
         return text
     if target == "ar" and has_ar:
         return text
-    # 1 - Google
     try:
         sl = "ar" if target == "en" else "en"
         r = requests.get("https://translate.googleapis.com/translate_a/single", params={"client": "gtx", "sl": sl, "tl": target, "dt": "t", "q": text}, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
@@ -112,7 +110,6 @@ def translate_text(text, target="en"):
                 return out
     except Exception as e:
         print("google tr err: " + str(e))
-    # 2 - MyMemory بديل
     try:
         pair = "ar|en" if target == "en" else "en|ar"
         r = requests.get("https://api.mymemory.translated.net/get", params={"q": text[:500], "langpair": pair}, timeout=10)
@@ -499,7 +496,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print("pdf err: " + str(e))
             await q.message.reply_text(T(uid, "download_failed"))
-
     elif data == "help_mp3" or data == "help_video" or data == "help":
         await q.message.reply_text(T(uid, "help_text"))
     elif data == "vip_info":
@@ -524,12 +520,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(T(uid, "fav_empty")); return
         txt = "\n".join(favs[-10:])
         await q.message.reply_text(f"⭐ {T(uid, 'fav_btn')}:\n{txt}")
-       elif data == "points_info":
-        await q.message.reply_text(f"🎁 نقاطك: {u.get('points', 0)}")
-    elif data == "history_info":
-        await q.message.reply_text("📜 سجل النقاط فارغ")
-    elif data == "fav_info":
-        await q.message.reply_text("⭐ المفضلة فارغة")
     elif data == "admin_info":
         if int(uid) != ADMIN_ID:
             await q.message.reply_text(T(uid, "help_text")); return
@@ -554,7 +544,14 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total = len(DATA["users"])
         vip_count = sum(1 for x in DATA["users"].values() if isinstance(x, dict) and float(x.get("vip", 0)) > time.time())
         total_points = sum(int(x.get("points", 0)) for x in DATA["users"].values() if isinstance(x, dict))
-        await q.message.reply_text(f"📊 احصائيات البوت\n\n👥 المستخدمين: {total}\n💎 VIP: {vip_count}\n🎁 مجموع النقط: {total_points}") "no_link_mp3")); return
+        await q.message.reply_text(f"📊 احصائيات البوت\n\n👥 المستخدمين: {total}\n💎 VIP: {vip_count}\n🎁 مجموع النقط: {total_points}")
+    elif data == "home":
+        name = q.from_user.first_name or ""
+        await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
+    elif data == "convert_mp3_last":
+        url = u.get("last_link", "")
+        if not url:
+            await q.message.reply_text(T(uid, "no_link_mp3")); return
         await q.message.reply_text(T(uid, "converting_mp3"))
         base = "/tmp/" + str(uid) + "_" + str(int(time.time())) + "_mp3"
         files = download_with_ytdlp(url, base, want_audio=True, quality="720")
@@ -624,7 +621,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     u = get_user(uid)
     user = update.effective_user
-    # صور PDF
     if update.message.photo:
         if u.get("pdf_mode"):
             file_id = update.message.photo[-1].file_id
@@ -638,7 +634,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u.get("lang"):
         await update.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
-    # الدعم
     if u.get("support_mode") or u.get("state") == "support":
         u["support_mode"] = False; u["state"] = "home"; save_data()
         await update.message.reply_text(f"✅ {T(uid, 'support_sent')}")
@@ -664,7 +659,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name2 = user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
-    # الترجمة - اهم حتة
     if u.get("translate_mode"):
         u["translate_mode"] = False; u["state"] = "home"; save_data()
         has_ar = any('\u0600' <= c <= '\u06FF' for c in text)
@@ -674,7 +668,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name2 = user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
-    # التلخيص
     if u.get("summarize_mode"):
         u["summarize_mode"] = False; u["state"] = "home"; save_data()
         summ = summarize_text(text)
@@ -682,7 +675,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name2 = user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
-    # البحث
     if u.get("state") == "search":
         u["state"] = "home"; save_data()
         msg = await update.message.reply_text(f"🔍 {T(uid, 'searching')}: {text}\n{T(uid, 'search_wait')}...")
@@ -699,7 +691,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup(buttons)
         await msg.edit_text(f"{T(uid, 'choose_result')}:", reply_markup=kb)
         return
-    # لينك مباشر
     if "http" in text and any(x in text for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"]):
         u["last_link"] = text
         hist = u.get("history", [])

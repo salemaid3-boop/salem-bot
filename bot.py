@@ -259,6 +259,7 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720"):
             fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
     opts = {
         "format": fmt,
+        "cookiefile": "cookies.txt",
         "outtmpl": base + ".%(ext)s",
         "quiet": True,
         "no_warnings": True,

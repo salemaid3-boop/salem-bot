@@ -1,5 +1,4 @@
 python-telegram-bot
-requests
 yt-dlp
-Flask
+requests
 Pillow

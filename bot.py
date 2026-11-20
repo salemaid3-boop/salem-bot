@@ -351,7 +351,7 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720"):
             "nocheckcertificate": True,
             "socket_timeout": 90,
             "cookiefile": "/etc/secrets/cookies.txt" if os.path.exists("/etc/secrets/cookies.txt") else ("cookies.txt" if os.path.exists("cookies.txt") else None),
-            "extractor_args": {"youtube": {"player_client": ["android", "ios"], "player_skip": ["configs", "web"]}},
+            "extractor_args": {"youtube": {"player_client": [["android", "ios", "web", "tv", "mweb"]], "player_skip": [ "configs"]}},
             "http_headers": {"User-Agent": "Mozilla/5.0"},
         }
         if want_audio:

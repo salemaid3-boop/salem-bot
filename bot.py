@@ -80,6 +80,7 @@ def get_user(uid):
             u[k] = list(v) if isinstance(v, list) else v
     return u
 
+# FIX 9 - reset_modes كانت بتمسح الجودة، دلوقتي بتمسح المودات بس
 def reset_modes(u):
     u["support_mode"] = False
     u["translate_mode"] = False
@@ -91,6 +92,7 @@ def reset_modes(u):
     u["gif_mode"] = False
     u["compress_mode"] = False
     u["state"] = "home"
+    # مش بنمسح quality ولا download_mode هنا
 
 def is_vip(uid):
     try:
@@ -98,7 +100,6 @@ def is_vip(uid):
     except:
         return False
 
-# ================= TRANSLATE - متظبط 100% =================
 def translate_text(text, target="en"):
     text = text.strip()
     if not text:
@@ -129,7 +130,6 @@ def translate_text(text, target="en"):
         print("mymemory err: " + str(e))
     return text
 
-# ================= SUMMARIZE - تلخيص حقيقي =================
 def summarize_text(text):
     text = text.strip()
     if len(text) < 200:
@@ -152,7 +152,7 @@ TEXTS = {
     "ar": {
         "choose_lang_title": "اختر لغتك",
         "welcome": "اهلا بيك في نزل",
-        "welcome_sub": "نزل فيديوهات وصوتيات من كل المنصات",
+        "welcome_sub": "نزل فيديوهات من تيك توك وانستا وفيسبوك",
         "points": "نقطك",
         "invites": "دعواتك",
         "vip_left": "فاضل في VIP",
@@ -176,7 +176,7 @@ TEXTS = {
         "admin_btn": "لوحة تحكم",
         "translate_btn": "ترجمة",
         "summarize_btn": "تلخيص",
-        "search_prompt": "اكتب اسم الاغنية او الفيديو اللي بتدور عليه",
+        "search_prompt": "اكتب اسم الفيديو اللي بتدور عليه في تيك توك",
         "searching": "بدور علي",
         "search_wait": "استنى ثواني",
         "not_found": "ملقيتش حاجة بالاسم ده، جرب اسم تاني او ابعت لينك على طول",
@@ -188,7 +188,7 @@ TEXTS = {
         "support_prompt": "اكتب رسالتك للدعم",
         "support_sent": "رسالتك اتبعت للدعم",
         "support_reply_title": "رد الدعم",
-        "help_text": "ابعت لينك من يوتيوب او تيك توك او انستا او فيسبوك، او دوس بحث بالاسم",
+        "help_text": "ابعت لينك من تيك توك او انستا او فيسبوك، او دوس بحث بالاسم",
         "lang_changed": "تم تغيير اللغة",
         "vip_done": "بقيت VIP لمدة 30 يوم",
         "vip_congrats": "مبروك، بقيت VIP",
@@ -221,7 +221,7 @@ TEXTS = {
     "en": {
         "choose_lang_title": "Choose your language",
         "welcome": "Welcome to Nezel",
-        "welcome_sub": "Download videos and audios from all platforms",
+        "welcome_sub": "Download videos from TikTok, Instagram and Facebook",
         "points": "Points",
         "invites": "Invites",
         "vip_left": "VIP left",
@@ -245,7 +245,7 @@ TEXTS = {
         "admin_btn": "Admin Panel",
         "translate_btn": "Translate",
         "summarize_btn": "Summarize",
-        "search_prompt": "Type the song or video name you want",
+        "search_prompt": "Type video name to search on TikTok",
         "searching": "Searching for",
         "search_wait": "Please wait",
         "not_found": "Nothing found with this name, try another name or send link directly",
@@ -257,7 +257,7 @@ TEXTS = {
         "support_prompt": "Write your message to support",
         "support_sent": "Your message sent to support",
         "support_reply_title": "Support reply",
-        "help_text": "Send a link from YouTube, TikTok, Instagram or Facebook, or tap Search",
+        "help_text": "Send a link from TikTok, Instagram or Facebook, or tap Search",
         "lang_changed": "Language changed",
         "vip_done": "You are now VIP for 30 days",
         "vip_congrats": "Congrats, you are VIP",
@@ -350,7 +350,6 @@ def show_main_menu_text(uid, name):
     lines.append("")
     lines.append(T(uid, 'welcome_sub'))
     lines.append("────────────────")
-    # تظبيط الارقام المعكوسة - بنحطها كده عشان تليجرام ميقلبهاش
     lines.append(f"🎁 {T(uid, 'points')}: {points} / 100")
     lines.append(f"👥 {T(uid, 'invites')}: {invites} / 50")
     lines.append(vip_line)
@@ -359,33 +358,151 @@ def show_main_menu_text(uid, name):
     lines.append(f"👇 {T(uid, 'send_link')}")
     return "\n".join(lines)
 
-def do_search(query):
+# ================= FIX 1 + 2 + 3 - تحميل تيك توك وانستا وفيسبوك من غير يوتيوب ومن غير كوكيز =================
+def download_tiktok_api(url):
     try:
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, "socket_timeout": 30}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
-            entries = info.get("entries", []) if info else []
-            results = []
-            for e in entries:
-                if not e:
-                    continue
-                vid = e.get("id", "")
-                title = e.get("title", query)
-                if vid and len(vid) == 11:
-                    results.append({"id": vid, "title": title})
-            if results:
-                return results
+        # لو لينك مختصر vt.tiktok.com لازم نفك الاختصار الاول
+        if "vt.tiktok.com" in url:
+            try:
+                r2 = requests.head(url, allow_redirects=True, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+                url = r2.url
+                print(f"Expanded TikTok URL: {url}")
+            except Exception as e:
+                print(f"expand err: {e}")
+        r = requests.get("https://www.tikwm.com/api/", params={"url": url}, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+        print(f"TikWM status: {r.status_code}")
+        data = r.json().get("data", {})
+        if not data:
+            print(f"TikWM empty: {r.text[:500]}")
+            return [], "", url
+        title = data.get("title", "") or ""
+        # فيديو
+        video = data.get("play") or data.get("wmplay") or data.get("hdplay")
+        if video:
+            vid_data = requests.get(video, timeout=60, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"}).content
+            if len(vid_data) > 10000:
+                path = f"/tmp/tiktok_{int(time.time())}.mp4"
+                with open(path, "wb") as f:
+                    f.write(vid_data)
+                return [path], title, url
+        # صور - بوست /photo/
+        images = data.get("images", [])
+        if images:
+            paths = []
+            for i, img in enumerate(images[:10]):
+                try:
+                    d = requests.get(img, timeout=20, headers={"User-Agent": "Mozilla/5.0"}).content
+                    p = f"/tmp/tiktok_img_{int(time.time())}_{i}.jpg"
+                    with open(p, "wb") as f:
+                        f.write(d)
+                    paths.append(p)
+                except Exception as e:
+                    print(f"img err: {e}")
+            return paths, title, url
+        # موسيقى
+        music = data.get("music_info", {}).get("play") if isinstance(data.get("music_info"), dict) else None
+        if music:
+            try:
+                d = requests.get(music, timeout=30).content
+                p = f"/tmp/tiktok_music_{int(time.time())}.mp3"
+                with open(p, "wb") as f:
+                    f.write(d)
+                return [p], title, url
+            except:
+                pass
     except Exception as e:
-        print("ytsearch failed: " + str(e))
+        print("tiktok api err: " + str(e))
+    return [], "", url
+
+def download_instagram_api(url):
+    # انستا عن طريق yt-dlp من غير كوكيز + fallback ddinstagram
+    try:
+        base = f"/tmp/insta_{int(time.time())}"
+        opts = {
+            "format": "best/bestvideo+bestaudio",
+            "outtmpl": base + ".%(ext)s",
+            "quiet": True,
+            "nocheckcertificate": True,
+            "socket_timeout": 60,
+            "retries": 5,
+            "noplaylist": True,
+            "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15"},
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+        files = glob.glob(base + ".*")
+        files = [f for f in files if not f.endswith(".part")]
+        if files:
+            return files
+    except Exception as e:
+        print(f"insta yt-dlp failed: {e}")
+    # Fallback - جرب ddinstagram
+    try:
+        # ddinstagram بيحول الريل لفيديو مباشر
+        dd_url = url.replace("instagram.com", "ddinstagram.com").replace("www.", "")
+        print(f"Trying dd: {dd_url}")
+        # بنرجع اللينك نفسه، التليجرام هيعرضه
+        return ["DD:" + dd_url]
+    except Exception as e:
+        print(f"dd failed: {e}")
     return []
 
-def _find_cookies():
-    for p in ["/etc/secrets/cookies.txt", "cookies.txt", "/etc/secrets/youtube_cookies.txt"]:
-        if os.path.exists(p):
-            return p
-    return None
+def download_facebook_api(url, base):
+    try:
+        opts = {
+            "format": "best/bestvideo+bestaudio",
+            "outtmpl": base + ".%(ext)s",
+            "quiet": False,
+            "nocheckcertificate": True,
+            "socket_timeout": 60,
+            "retries": 5,
+            "noplaylist": True,
+            "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)"},
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.download([url])
+        files = glob.glob(base + ".*")
+        files = [f for f in files if not f.endswith(".part")]
+        return files
+    except Exception as e:
+        print(f"fb failed: {e}")
+        return []
 
 def download_with_ytdlp(url, base, want_audio=False, quality="720", no_wm=False, playlist=False):
+    # FIX - شلنا الكوكيز خالص، وشلنا يوتيوب
+    if "youtube.com" in url or "youtu.be" in url:
+        print("YouTube disabled by user")
+        return []
+    # تيك توك - الاول من API
+    if "tiktok.com" in url:
+        paths, title, _ = download_tiktok_api(url)
+        if paths:
+            # لو عايز MP3، حول الفيديو ل MP3
+            if want_audio and paths[0].endswith(".mp4"):
+                try:
+                    out = base + ".mp3"
+                    subprocess.run(["ffmpeg", "-y", "-i", paths[0], "-vn", "-ab", "192k", out], capture_output=True, timeout=60)
+                    if os.path.exists(out):
+                        try: os.remove(paths[0])
+                        except: pass
+                        return [out]
+                except Exception as e:
+                    print(f"mp3 convert err: {e}")
+            return paths
+        print("TikTok API failed, trying yt-dlp fallback")
+    # انستا
+    if "instagram.com" in url:
+        files = download_instagram_api(url)
+        if files:
+            if files[0].startswith("DD:"):
+                return files
+            return files
+    # فيسبوك
+    if "facebook.com" in url or "fb.watch" in url:
+        files = download_facebook_api(url, base)
+        if files:
+            return files
+    # عام - لاي موقع تاني
     try:
         for f in glob.glob(base + ".*"):
             try: os.remove(f)
@@ -396,68 +513,45 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", no_wm=False,
             qmap = {"720": 720, "1080": 1080, "2k": 1440, "2K": 1440, "4k": 2160, "4K": 2160}
             h = qmap.get(str(quality), 720)
             fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/bestvideo+bestaudio/best"
-        cookies = _find_cookies()
-        print(f"Cookies: {cookies} | URL: {url[:100]} | Q:{quality} no_wm:{no_wm}")
         opts = {
             "format": fmt,
             "outtmpl": base + ".%(ext)s",
             "quiet": False,
-            "no_warnings": False,
             "nocheckcertificate": True,
             "socket_timeout": 90,
-            "retries": 10,
-            "fragment_retries": 10,
-            "concurrent_fragment_downloads": 4,
-            "cookiefile": cookies,
+            "retries": 5,
             "noplaylist": not playlist,
-            "extractor_args": {
-                "youtube": {"player_client": [["android", "ios", "web", "tv", "mweb"]], "player_skip": ["configs"]},
-                "tiktok": {"api_hostname": "api16-normal-c-useast1a.tiktokv.com", "app_version": "34.1.2"},
-                "instagram": {"api_version": "v1"},
-            },
             "http_headers": {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-                "Referer": "https://www.tiktok.com/",
+                "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
             },
-            "extractor_retries": 3,
         }
-        if no_wm and "tiktok.com" in url:
-            opts["format"] = "best"
         if want_audio:
             opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         with yt_dlp.YoutubeDL(opts) as ydl:
-            try:
-                ydl.download([url])
-            except Exception as e1:
-                print(f"First try failed: {e1} - retry best")
-                opts["format"] = "best/bestvideo+bestaudio"
-                if "tiktok.com" in url or "facebook.com" in url or "fb.watch" in url:
-                    opts.pop("cookiefile", None)
-                with yt_dlp.YoutubeDL(opts) as ydl2:
-                    ydl2.download([url])
+            ydl.download([url])
         files = glob.glob(base + ".*")
         files = [f for f in files if not f.endswith(".part") and not f.endswith(".ytdl")]
         if len(files) > 1:
             files = sorted(files, key=lambda x: os.path.getsize(x), reverse=True)
-        print(f"Download result: {files}")
         return files
     except Exception as e:
         print("download failed: " + str(e))
         return []
 
+# FIX 8 - السجل بقى بيحفظ dict صح
 def save_history(u, url, title=""):
     hist = u.get("history", [])
-    # لو مش list قديم، حوله
     new_hist = []
     for h in hist:
         if isinstance(h, dict):
             new_hist.append(h)
         else:
             new_hist.append({"url": str(h), "title": str(h)[:60], "time": int(time.time())})
+    # امنع التكرار
+    new_hist = [x for x in new_hist if x.get("url") != url]
     new_hist.append({"url": url, "title": (title or url)[:80], "time": int(time.time())})
-    u["history"] = new_hist[-20:]
+    u["history"] = new_hist[-30:]
     save_data()
 
 def add_fav(u, url, title=""):
@@ -468,46 +562,100 @@ def add_fav(u, url, title=""):
             new.append(f)
         else:
             new.append({"url": str(f), "title": str(f)[:60], "time": int(time.time())})
+    new = [x for x in new if x.get("url") != url]
     new.append({"url": url, "title": (title or url)[:80], "time": int(time.time())})
-    u["favs"] = new[-20:]
+    u["favs"] = new[-30:]
     save_data()
 
-# ===== الخانات الجديدة =====
+# ================= FIX 1 + 4 + 5 - البحث والافلام والاكسبلور من غير يوتيوب =================
+def do_search(query):
+    # FIX 1 - بحث تيك توك بدل يوتيوب
+    try:
+        r = requests.get("https://www.tikwm.com/api/feed/search", params={"keywords": query, "count": 10, "cursor": 0}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        data = r.json().get("data", {})
+        videos = data.get("videos", []) if isinstance(data, dict) else []
+        results = []
+        for v in videos[:5]:
+            vid = v.get("video_id") or v.get("id") or ""
+            title = v.get("title") or v.get("desc") or query
+            play = v.get("play") or ""
+            author = v.get("author", {}).get("nickname", "") if isinstance(v.get("author"), dict) else ""
+            if vid:
+                results.append({"id": str(vid), "title": title[:60], "play": play, "author": author, "url": f"https://www.tiktok.com/@{v.get('author', {}).get('unique_id','tiktok')}/video/{vid}" if vid else ""})
+        if results:
+            return results
+    except Exception as e:
+        print(f"tiktok search err: {e}")
+    return []
+
 def search_movies(query):
+    # FIX 4 - بيدور بالعربي في ويكيبيديا + OMDB
+    results = []
+    # 1 - ويكيبيديا عربي
+    try:
+        r = requests.get("https://ar.wikipedia.org/w/api.php", params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 5}, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            for item in r.json().get("query", {}).get("search", [])[:5]:
+                title = item.get("title", "")
+                snippet = re.sub(r'<[^>]+>', '', item.get("snippet", "") or "")[:180]
+                results.append({"name": title, "summary": snippet, "url": f"https://ar.wikipedia.org/wiki/{title.replace(' ', '_')}"})
+        if results:
+            return results
+    except Exception as e:
+        print(f"wiki movies err: {e}")
+    # 2 - OMDB انجليزي
+    try:
+        r = requests.get("http://www.omdbapi.com/", params={"apikey": "trilogy", "s": query}, timeout=10)
+        if r.status_code == 200:
+            for item in r.json().get("Search", [])[:5]:
+                results.append({"name": item.get("Title",""), "summary": f"{item.get('Year','')} - {item.get('Type','')}", "url": f"https://www.imdb.com/title/{item.get('imdbID','')}"})
+        if results:
+            return results
+    except Exception as e:
+        print(f"omdb err: {e}")
+    # 3 - TVMaze انجليزي كـ fallback
     try:
         r = requests.get("https://api.tvmaze.com/search/shows", params={"q": query}, timeout=10)
         if r.status_code == 200:
-            out = []
             for item in r.json()[:5]:
                 s = item.get("show", {})
-                out.append({"name": s.get("name",""), "summary": re.sub(r'<[^>]+>', '', s.get("summary","") or "")[:200], "url": s.get("url","")})
-            return out
+                results.append({"name": s.get("name",""), "summary": re.sub(r'<[^>]+>', '', s.get("summary","") or "")[:180], "url": s.get("url","")})
     except Exception as e:
-        print("movies err: " + str(e))
-    return []
+        print(f"tvmaze err: {e}")
+    return results
 
 def get_wallpapers(query="nature"):
+    # FIX - خلفيات شغالة
     try:
+        # picsum - شغال على طول
         r = requests.get("https://picsum.photos/v2/list", params={"page": 1, "limit": 5}, timeout=10)
         if r.status_code == 200:
             return [f"https://picsum.photos/id/{x['id']}/1080/1920" for x in r.json()]
     except Exception as e:
-        print("wallpaper err: " + str(e))
-    return ["https://picsum.photos/1080/1920"]
+        print(f"wallpaper err: {e}")
+    return ["https://picsum.photos/1080/1920", "https://picsum.photos/1080/1920?random=1", "https://picsum.photos/1080/1920?random=2"]
 
 def get_trending():
+    # FIX 5 - ترند تيك توك حقيقي
     try:
-        opts = {"quiet": True, "extract_flat": True, "skip_download": True}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info("ytsearch5:trending tiktok egypt 2026", download=False)
-            res = []
-            for e in (info.get("entries", []) or [])[:5]:
-                if e and e.get("id"):
-                    res.append({"id": e.get("id"), "title": e.get("title","")})
+        r = requests.get("https://www.tikwm.com/api/feed/list", params={"region": "EG", "count": 10}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        data = r.json().get("data", {})
+        videos = data.get("videos", []) if isinstance(data, dict) else []
+        res = []
+        for v in videos[:5]:
+            vid = v.get("video_id") or v.get("id") or ""
+            title = v.get("title") or v.get("desc") or "ترند"
+            if vid:
+                res.append({"id": str(vid), "title": title[:50], "play": v.get("play",""), "url": f"https://www.tiktok.com/@tiktok/video/{vid}"})
+        if res:
             return res
     except Exception as e:
-        print("trend err: " + str(e))
-    return []
+        print(f"trend err: {e}")
+    # fallback - بحث ترند
+    try:
+        return do_search("ترند مصر")
+    except:
+        return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -595,7 +743,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u.get("lang"):
         await q.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
-    # الجودة - دلوقتي بتشتغل بجد
     if data.startswith("set_q_"):
         qq = data.replace("set_q_", "").upper()
         if qq == "2K": qq = "2k"
@@ -617,11 +764,12 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "mode_playlist":
         u["download_mode"] = "playlist"; save_data()
-        await q.message.reply_text("📃 ابعت لينك قايمة التشغيل بتاعت يوتيوب، وهحمل اول 5 فيديوهات منها")
+        await q.message.reply_text("📃 ابعت لينك تيك توك او انستا، قايمة التشغيل بتاعت يوتيوب اتلغت عشان يوتيوب اتلغى")
         return
     if data == "mode_story":
         reset_modes(u); u["story_mode"] = True; u["state"] = "story"; save_data()
-        await q.message.reply_text("📸 ابعت يوزر انستا من غير @، مثلا: cristiano\nوهجيبلك الستوري بتاعه")
+        # FIX 6 - ستوري بقى بيقبل لينك مش يوزر
+        await q.message.reply_text("📸 ابعت لينك الستوري من انستا على طول، مش اليوزر\nمثال: انسخ لينك الستوري من انستا وابعته هنا\nلو بعت يوزر بس مش هينفع عشان انستا قافل الستوري من غير تسجيل دخول")
         return
     if data == "mode_explore":
         await q.message.reply_text("🔥 بدور على الترند...")
@@ -633,7 +781,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = t["title"][:35]
             btns.append([InlineKeyboardButton(f"🎵 {title}", callback_data=f"pick_{t['id']}")])
         btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
-        await q.message.reply_text("🔥 ترند دلوقتي:", reply_markup=InlineKeyboardMarkup(btns))
+        await q.message.reply_text("🔥 ترند تيك توك دلوقتي:", reply_markup=InlineKeyboardMarkup(btns))
         return
     if data == "mode_gif":
         reset_modes(u); u["gif_mode"] = True; save_data()
@@ -649,7 +797,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if data == "mode_movies":
         reset_modes(u); u["movie_mode"] = True; u["state"] = "movies"; save_data()
-        await q.message.reply_text("🎬 اكتب اسم الفيلم او المسلسل اللي بتدور عليه")
+        await q.message.reply_text("🎬 اكتب اسم الفيلم او المسلسل اللي بتدور عليه بالعربي او الانجليزي")
         return
     if data == "mode_wallpaper":
         reset_modes(u); u["wallpaper_mode"] = True; u["state"] = "wallpaper"; save_data()
@@ -692,6 +840,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await q.message.reply_document(f, filename="Nezel.pdf", caption=T(uid, "pdf_done"))
             try: os.remove(pdf_path)
             except: pass
+            u["pdf_photos"] = []; u["pdf_mode"] = False; save_data()
         except Exception as e:
             print("pdf err: " + str(e))
             await q.message.reply_text(T(uid, "download_failed"))
@@ -711,14 +860,15 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hist = u.get("history", [])
         if not hist:
             await q.message.reply_text(T(uid, "history_empty")); return
+        # FIX 8 - index ثابت، مش بيتحسب غلط
         btns = []
-        for i, h in enumerate(hist[-10:]):
+        for idx, h in enumerate(hist[-10:]):
+            real_idx = len(hist) - len(hist[-10:]) + idx
             if isinstance(h, dict):
                 title = h.get("title","")[:30] or h.get("url","")[:30]
-                url = h.get("url","")
             else:
-                title = str(h)[:30]; url = str(h)
-            btns.append([InlineKeyboardButton(f"▶️ {title}", callback_data=f"hist_{len(hist)-10+i}")])
+                title = str(h)[:30]
+            btns.append([InlineKeyboardButton(f"▶️ {title}", callback_data=f"hist_{real_idx}")])
         btns.append([InlineKeyboardButton("🗑️ مسح السجل", callback_data="hist_clear")])
         btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
         await q.message.reply_text(f"📂 {T(uid, 'history_btn')} - دوس على اي واحد عشان تحمله تاني:", reply_markup=InlineKeyboardMarkup(btns))
@@ -734,8 +884,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
             files = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality","720"))
             if files:
-                with open(files[0], "rb") as f:
-                    await q.message.reply_video(f)
+                if files[0].startswith("DD:"):
+                    await q.message.reply_text(f"📥 افتح اللينك ده: {files[0][3:]}")
+                elif files[0].endswith(".jpg"):
+                    await q.message.reply_photo(open(files[0], "rb"))
+                else:
+                    with open(files[0], "rb") as f:
+                        await q.message.reply_video(f)
                 try: os.remove(files[0])
                 except: pass
             else:
@@ -747,12 +902,13 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not favs:
             await q.message.reply_text(T(uid, "fav_empty")); return
         btns = []
-        for i, h in enumerate(favs[-10:]):
+        for idx, h in enumerate(favs[-10:]):
+            real_idx = len(favs) - len(favs[-10:]) + idx
             if isinstance(h, dict):
                 title = h.get("title","")[:30] or h.get("url","")[:30]
             else:
                 title = str(h)[:30]
-            btns.append([InlineKeyboardButton(f"⭐ {title}", callback_data=f"favdl_{i}")])
+            btns.append([InlineKeyboardButton(f"⭐ {title}", callback_data=f"favdl_{real_idx}")])
         btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
         await q.message.reply_text(f"⭐ {T(uid, 'fav_btn')} - دوس عشان تحمل:", reply_markup=InlineKeyboardMarkup(btns))
     elif data.startswith("favdl_"):
@@ -764,8 +920,11 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
             files = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality","720"))
             if files:
-                with open(files[0], "rb") as f:
-                    await q.message.reply_video(f)
+                if files[0].startswith("DD:"):
+                    await q.message.reply_text(files[0][3:])
+                else:
+                    with open(files[0], "rb") as f:
+                        await q.message.reply_video(f)
                 try: os.remove(files[0])
                 except: pass
             else:
@@ -773,7 +932,6 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await q.message.reply_text(T(uid, "download_failed"))
     elif data.startswith("favadd_"):
-        # بيتضاف من زرار المفضلة بعد التحميل
         if u.get("last_link"):
             add_fav(u, u.get("last_link"), u.get("last_link"))
             await q.message.reply_text("⭐ اتضاف للمفضلة")
@@ -814,18 +972,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         files = download_with_ytdlp(url, base, want_audio=True, quality="720")
         if not files:
             await q.message.reply_text(T(uid, "download_failed")); return
+        if files[0].startswith("DD:"):
+            await q.message.reply_text(files[0][3:]); return
         with open(files[0], "rb") as f:
             await q.message.reply_audio(f, title="Nezel Audio")
         try: os.remove(files[0])
         except: pass
+    elif data.startswith("dl_"):
+        # ده للبحث والاكسبلور - كان ناقص في handle_button القديم
+        await handle_dl(update, context)
 
 async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    try:
+        await q.answer()
+    except:
+        pass
     uid = q.from_user.id
+    u = get_user(uid)
     data = q.data or ""
+    # dl_tiktok_<video_id> - من البحث
+    if data.startswith("dl_tiktok_"):
+        vid = data.replace("dl_tiktok_", "")
+        await q.message.reply_text(T(uid, "downloading"))
+        # هنجيب الفيديو من البحث تاني
+        url = f"https://www.tiktok.com/@tiktok/video/{vid}"
+        paths, title, _ = download_tiktok_api(url)
+        if paths:
+            with open(paths[0], "rb") as f:
+                await q.message.reply_video(f, caption=title[:200] if title else "")
+            try: os.remove(paths[0])
+            except: pass
+        else:
+            await q.message.reply_text(T(uid, "download_failed"))
+        return
     want_audio = False
-    quality = "720"
+    quality = u.get("quality", "720")
     vid = ""
     if data.startswith("dl_audio_"):
         vid = data.replace("dl_audio_", ""); want_audio = True
@@ -843,17 +1025,17 @@ async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await q.message.reply_text(T(uid, "downloading"))
     try:
-        base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
-        yt_url = "https://www.youtube.com/watch?v=" + vid
-        files = download_with_ytdlp(yt_url, base, want_audio=want_audio, quality=quality)
-        if not files:
+        # البحث دلوقتي تيك توك مش يوتيوب، فـ vid هو video_id بتاع تيك توك
+        url = f"https://www.tiktok.com/@tiktok/video/{vid}"
+        paths, title, _ = download_tiktok_api(url)
+        if not paths:
             await q.message.reply_text(T(uid, "download_failed")); return
-        with open(files[0], "rb") as f:
+        with open(paths[0], "rb") as f:
             if want_audio:
                 await q.message.reply_audio(f)
             else:
-                await q.message.reply_video(f)
-        try: os.remove(files[0])
+                await q.message.reply_video(f, caption=title[:200] if title else "")
+        try: os.remove(paths[0])
         except: pass
     except Exception as e:
         await q.message.reply_text(f"{T(uid, 'download_failed')}\n{str(e)}")
@@ -880,29 +1062,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     u = get_user(uid)
     user = update.effective_user
-    # فيديو مبعوت من الموبايل - GIF / ضغط / استخراج صوت
-    if update.message.video or update.message.document:
+    # FIX 7 - فيديو من الموبايل - ظبطنا file_id
+    if update.message.video or (update.message.document and update.message.document.mime_type and "video" in update.message.document.mime_type):
         if u.get("gif_mode") or u.get("compress_mode") or u.get("state") == "extract":
             try:
                 await update.message.reply_text("⏳ بحول الفيديو...")
-                f = await context.bot.get_file(update.message.video.file_id if update.message.video else update.message.document.file_id)
+                # FIX - file_id صح
+                if update.message.video:
+                    file_id = update.message.video.file_id
+                else:
+                    file_id = update.message.document.file_id
+                f = await context.bot.get_file(file_id)
                 in_path = f"/tmp/{uid}_in.mp4"
                 await f.download_to_drive(in_path)
-                out_path = f"/tmp/{uid}_out.mp4"
                 if u.get("gif_mode"):
                     out_path = f"/tmp/{uid}_out.gif"
-                    subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], capture_output=True, timeout=60)
-                    with open(out_path, "rb") as ff:
-                        await update.message.reply_document(ff, filename="Nezel.gif")
+                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], capture_output=True, timeout=60)
+                    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+                        await update.message.reply_text("الـ ffmpeg مش شغال على السيرفر، جرب تاني او كلم الادمن")
+                    else:
+                        with open(out_path, "rb") as ff:
+                            await update.message.reply_document(ff, filename="Nezel.gif")
+                        try: os.remove(out_path)
+                        except: pass
                 elif u.get("compress_mode"):
-                    subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vcodec", "libx264", "-crf", "28", "-preset", "fast", out_path], capture_output=True, timeout=120)
-                    with open(out_path, "rb") as ff:
-                        await update.message.reply_video(ff, caption="🗜️ تم ضغط الفيديو")
-                else:
+                    out_path = f"/tmp/{uid}_out.mp4"
+                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vcodec", "libx264", "-crf", "28", "-preset", "fast", out_path], capture_output=True, timeout=120)
+                    if not os.path.exists(out_path):
+                        await update.message.reply_text("الضغط فشل، الـ ffmpeg مش شغال")
+                    else:
+                        with open(out_path, "rb") as ff:
+                            await update.message.reply_video(ff, caption="🗜️ تم ضغط الفيديو")
+                        try: os.remove(out_path)
+                        except: pass
+                else:  # extract
                     out_path = f"/tmp/{uid}_out.mp3"
-                    subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], capture_output=True, timeout=60)
-                    with open(out_path, "rb") as ff:
-                        await update.message.reply_audio(ff, title="Nezel Audio")
+                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], capture_output=True, timeout=60)
+                    if not os.path.exists(out_path):
+                        await update.message.reply_text("استخراج الصوت فشل")
+                    else:
+                        with open(out_path, "rb") as ff:
+                            await update.message.reply_audio(ff, title="Nezel Audio")
+                        try: os.remove(out_path)
+                        except: pass
+                try: os.remove(in_path)
+                except: pass
                 reset_modes(u); save_data()
                 return
             except Exception as e:
@@ -992,25 +1196,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name2 = user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
-    # ستوري انستا
+    # ستوري - FIX 6 - بقى بيقبل لينك
     if u.get("state") == "story" or u.get("story_mode"):
         reset_modes(u); save_data()
-        username = text.replace("@","").replace("https://instagram.com/","").strip().split("/")[0]
-        await update.message.reply_text(f"📸 بدور على ستوري @{username}...")
-        try:
-            base = f"/tmp/{uid}_{int(time.time())}"
-            files = download_with_ytdlp(f"https://www.instagram.com/stories/{username}/", base, want_audio=False, quality="720")
+        if "http" in text and "instagram.com" in text:
+            await update.message.reply_text("📸 بحمل الستوري...")
+            files = download_instagram_api(text)
             if files:
-                with open(files[0], "rb") as f:
-                    await update.message.reply_video(f, caption=f"📸 ستوري @{username}")
-                try: os.remove(files[0])
-                except: pass
+                if files[0].startswith("DD:"):
+                    await update.message.reply_text(f"📸 افتح اللينك ده وحمله: {files[0][3:]}")
+                else:
+                    with open(files[0], "rb") as f:
+                        await update.message.reply_video(f, caption="📸 ستوري من نزل")
+                    try: os.remove(files[0])
+                    except: pass
             else:
-                await update.message.reply_text("ملقيتش ستوري، ممكن يكون الحساب برايفت او مفيش ستوري دلوقتي، او محتاج كوكيز انستا")
-        except Exception as e:
-            await update.message.reply_text(T(uid, "download_failed") + f" {e}")
+                await update.message.reply_text("مش عارف اجيب الستوري، انستا قافل الستوري من غير تسجيل دخول، ابعت لينك ريل او بوست بدل الستوري")
+        else:
+            await update.message.reply_text("📸 ابعت لينك الستوري مش اليوزر، انسخ لينك الستوري من انستا وابعته هنا")
         return
-    # افلام
+    # افلام - FIX 4
     if u.get("state") == "movies" or u.get("movie_mode"):
         reset_modes(u); save_data()
         await update.message.reply_text("🎬 بدور...")
@@ -1030,7 +1235,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for w in walls[:3]:
             try:
                 await update.message.reply_photo(w, caption="🖼️ خلفية HD من نزل")
-            except: pass
+            except Exception as e:
+                print(f"wall send err: {e}")
         return
     if u.get("state") == "search":
         u["state"] = "home"; save_data()
@@ -1043,18 +1249,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = r["title"]
             if len(title) > 35:
                 title = title[:35] + "..."
+            # FIX - pick_ بقى بيبعت video_id بتاع تيك توك مش يوتيوب
             buttons.append([InlineKeyboardButton(f"🎵 {title}", callback_data=f"pick_{r['id']}")])
         buttons.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
         kb = InlineKeyboardMarkup(buttons)
         await msg.edit_text(f"{T(uid, 'choose_result')}:", reply_markup=kb)
         return
-    if "http" in text and any(x in text for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"]):
+    # FIX 1 - لو بعت لينك يوتيوب، قوله ان يوتيوب اتلغى
+    if "http" in text and ("youtube.com" in text or "youtu.be" in text):
+        await update.message.reply_text("⚠️ يوتيوب اتلغى من البوت خالص\nابعت لينك من تيك توك او انستا او فيسبوك بدل يوتيوب")
+        return
+    if "http" in text and any(x in text for x in ["tiktok.com", "instagram.com", "facebook.com", "fb.watch", "vt.tiktok.com"]):
         u["last_link"] = text
         save_history(u, text, text[:60])
         mode = u.get("download_mode", "video")
         want_audio = (mode == "audio")
         no_wm = (mode == "nowm")
-        is_playlist = (mode == "playlist" or "list=" in text or "playlist" in text)
+        is_playlist = (mode == "playlist")
         ql = u.get("quality", "720")
         await update.message.reply_text(T(uid, "downloading"))
         try:
@@ -1065,14 +1276,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="convert_mp3_last")],
                     [InlineKeyboardButton("⭐ اضافة للمفضلة", callback_data="favadd_")],
                 ])
-                # لو قايمة تشغيل، ابعت اول واحد
-                with open(files[0], "rb") as f:
-                    if want_audio:
-                        await update.message.reply_audio(f, reply_markup=kb)
-                    else:
-                        await update.message.reply_video(f, reply_markup=kb)
-                try: os.remove(files[0])
-                except: pass
+                # لو DD link
+                if files[0].startswith("DD:"):
+                    await update.message.reply_text(f"📥 افتح اللينك ده وحمله: {files[0][3:]}", reply_markup=kb)
+                elif files[0].endswith(".jpg") or files[0].endswith(".jpeg") or files[0].endswith(".png"):
+                    # بوست صور
+                    for fp in files:
+                        try:
+                            with open(fp, "rb") as f:
+                                await update.message.reply_photo(f)
+                            try: os.remove(fp)
+                            except: pass
+                        except Exception as e:
+                            print(f"photo send err: {e}")
+                    await update.message.reply_text("📸 تم تحميل الصور", reply_markup=kb)
+                else:
+                    with open(files[0], "rb") as f:
+                        if want_audio:
+                            await update.message.reply_audio(f, reply_markup=kb)
+                        else:
+                            await update.message.reply_video(f, reply_markup=kb)
+                    try: os.remove(files[0])
+                    except: pass
             else:
                 await update.message.reply_text(T(uid, "download_failed"))
         except Exception as e:
@@ -1089,13 +1314,16 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("vip", vip_cmd))
     app.add_handler(CommandHandler("reply", reply_cmd))
+    # FIX - ترتيب الهاندلر مهم، dl_ الاول، وبعدين pick_، وبعدين الباقي
     app.add_handler(CallbackQueryHandler(handle_dl, pattern="^dl_"))
     app.add_handler(CallbackQueryHandler(handle_choose_result, pattern="^pick_"))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    # FIX 7 - فيديو من الموبايل - ظبطنا الفلتر
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_message))
-    print("Bot started")
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
+    print("Bot started - No YouTube, TikTok/Insta/FB only")
     app.run_polling()
 
 if __name__ == "__main__":

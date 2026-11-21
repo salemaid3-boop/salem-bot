@@ -26,8 +26,6 @@ import io
 import html
 import requests
 import yt_dlp
-import subprocess
-import shutil
 from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -65,9 +63,7 @@ DEFAULT_USER = {
     "lang": None, "vip": 0, "state": "home",
     "support_mode": False, "translate_mode": False, "summarize_mode": False, "pdf_mode": False,
     "points": 0, "invites": 0, "invited_by": None, "invited_users": [],
-    "last_link": "", "pdf_photos": [], "history": [], "favs": [],
-    "quality": "720", "download_mode": "video", "story_mode": False, "movie_mode": False, "wallpaper_mode": False,
-    "gif_mode": False, "compress_mode": False,
+    "last_link": "", "pdf_photos": [], "history": [], "favs": []
 }
 
 def get_user(uid):
@@ -86,11 +82,6 @@ def reset_modes(u):
     u["translate_mode"] = False
     u["summarize_mode"] = False
     u["pdf_mode"] = False
-    u["story_mode"] = False
-    u["movie_mode"] = False
-    u["wallpaper_mode"] = False
-    u["gif_mode"] = False
-    u["compress_mode"] = False
     u["state"] = "home"
 
 def is_vip(uid):
@@ -99,6 +90,7 @@ def is_vip(uid):
     except:
         return False
 
+# ================= TRANSLATE - متظبط 100% =================
 def translate_text(text, target="en"):
     text = text.strip()
     if not text:
@@ -129,6 +121,7 @@ def translate_text(text, target="en"):
         print("mymemory err: " + str(e))
     return text
 
+# ================= SUMMARIZE - تلخيص حقيقي =================
 def summarize_text(text):
     text = text.strip()
     if len(text) < 200:
@@ -137,7 +130,8 @@ def summarize_text(text):
     sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
     if len(sentences) <= 3:
         return text
-    picked = [sentences[0]]
+    picked = []
+    picked.append(sentences[0])
     by_len = sorted(sentences, key=len, reverse=True)[:2]
     for s in by_len:
         if s not in picked:
@@ -150,7 +144,7 @@ TEXTS = {
     "ar": {
         "choose_lang_title": "اختر لغتك",
         "welcome": "اهلا بيك في نزل",
-        "welcome_sub": "نزل فيديوهات من تيك توك وانستا وفيسبوك",
+        "welcome_sub": "نزل فيديوهات وصوتيات من كل المنصات",
         "points": "نقطك",
         "invites": "دعواتك",
         "vip_left": "فاضل في VIP",
@@ -162,8 +156,6 @@ TEXTS = {
         "download_video": "تحميل فيديو",
         "quality_720": "جودة 720",
         "quality_1080": "جودة 1080",
-        "quality_2k": "جودة 2K",
-        "quality_4k": "جودة 4K",
         "pdf_btn": "صور لـ PDF",
         "fav_btn": "مفضلتي",
         "history_btn": "سجلي",
@@ -174,7 +166,7 @@ TEXTS = {
         "admin_btn": "لوحة تحكم",
         "translate_btn": "ترجمة",
         "summarize_btn": "تلخيص",
-        "search_prompt": "اكتب اسم الفيديو اللي بتدور عليه في تيك توك",
+        "search_prompt": "اكتب اسم الاغنية او الفيديو اللي بتدور عليه",
         "searching": "بدور علي",
         "search_wait": "استنى ثواني",
         "not_found": "ملقيتش حاجة بالاسم ده، جرب اسم تاني او ابعت لينك على طول",
@@ -186,7 +178,7 @@ TEXTS = {
         "support_prompt": "اكتب رسالتك للدعم",
         "support_sent": "رسالتك اتبعت للدعم",
         "support_reply_title": "رد الدعم",
-        "help_text": "ابعت لينك من تيك توك او انستا او فيسبوك، او دوس بحث بالاسم",
+        "help_text": "ابعت لينك من يوتيوب او تيك توك او انستا او فيسبوك، او دوس بحث بالاسم",
         "lang_changed": "تم تغيير اللغة",
         "vip_done": "بقيت VIP لمدة 30 يوم",
         "vip_congrats": "مبروك، بقيت VIP",
@@ -204,22 +196,11 @@ TEXTS = {
         "no_link_mp3": "ابعت لينك الفيديو الاول",
         "history_empty": "سجلك فاضي لسه",
         "fav_empty": "مفضلتك فاضية لسه",
-        "no_wm_btn": "بدون علامة مائية",
-        "playlist_btn": "تحميل قايمة تشغيل",
-        "story_btn": "ستوري انستا",
-        "gif_btn": "فيديو لـ GIF",
-        "compress_btn": "ضغط فيديو",
-        "extract_btn": "استخراج صوت من فيديو",
-        "movies_btn": "افلام ومسلسلات",
-        "wallpaper_btn": "خلفيات HD",
-        "explore_btn": "اكسبلور ترند",
-        "choose_quality": "اختار الجودة اللي عايز تحمل بيها",
-        "quality_set": "تمام، الجودة بقت",
     },
     "en": {
         "choose_lang_title": "Choose your language",
         "welcome": "Welcome to Nezel",
-        "welcome_sub": "Download videos from TikTok, Instagram and Facebook",
+        "welcome_sub": "Download videos and audios from all platforms",
         "points": "Points",
         "invites": "Invites",
         "vip_left": "VIP left",
@@ -231,8 +212,6 @@ TEXTS = {
         "download_video": "Download Video",
         "quality_720": "Quality 720",
         "quality_1080": "Quality 1080",
-        "quality_2k": "Quality 2K",
-        "quality_4k": "Quality 4K",
         "pdf_btn": "Images to PDF",
         "fav_btn": "My Favorites",
         "history_btn": "My History",
@@ -243,7 +222,7 @@ TEXTS = {
         "admin_btn": "Admin Panel",
         "translate_btn": "Translate",
         "summarize_btn": "Summarize",
-        "search_prompt": "Type video name to search on TikTok",
+        "search_prompt": "Type the song or video name you want",
         "searching": "Searching for",
         "search_wait": "Please wait",
         "not_found": "Nothing found with this name, try another name or send link directly",
@@ -255,7 +234,7 @@ TEXTS = {
         "support_prompt": "Write your message to support",
         "support_sent": "Your message sent to support",
         "support_reply_title": "Support reply",
-        "help_text": "Send a link from TikTok, Instagram or Facebook, or tap Search",
+        "help_text": "Send a link from YouTube, TikTok, Instagram or Facebook, or tap Search",
         "lang_changed": "Language changed",
         "vip_done": "You are now VIP for 30 days",
         "vip_congrats": "Congrats, you are VIP",
@@ -273,17 +252,6 @@ TEXTS = {
         "no_link_mp3": "Send video link first",
         "history_empty": "Your history is empty",
         "fav_empty": "Your favorites is empty",
-        "no_wm_btn": "No Watermark",
-        "playlist_btn": "Playlist Download",
-        "story_btn": "Insta Story",
-        "gif_btn": "Video to GIF",
-        "compress_btn": "Compress Video",
-        "extract_btn": "Extract Audio",
-        "movies_btn": "Movies & Series",
-        "wallpaper_btn": "HD Wallpapers",
-        "explore_btn": "Trending Explore",
-        "choose_quality": "Choose quality",
-        "quality_set": "Quality set to",
     }
 }
 
@@ -300,13 +268,6 @@ def lang_keyboard():
         [InlineKeyboardButton("English 🇬🇧", callback_data="set_lang_en")],
     ])
 
-def quality_keyboard(uid):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎬 720", callback_data="set_q_720"), InlineKeyboardButton("🎬 1080", callback_data="set_q_1080")],
-        [InlineKeyboardButton("🎬 2K", callback_data="set_q_2k"), InlineKeyboardButton("🎬 4K", callback_data="set_q_4k")],
-        [InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")],
-    ])
-
 def main_keyboard(uid):
     u = get_user(uid)
     if is_vip(uid):
@@ -315,19 +276,13 @@ def main_keyboard(uid):
     else:
         vip_txt = f"👑 {T(uid, 'vip_btn')}"
     kb = [
-        [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="mode_mp3"), InlineKeyboardButton(f"📥 {T(uid, 'download_video')}", callback_data="mode_video")],
-        [InlineKeyboardButton(f"🎬 {T(uid, 'quality_720')}", callback_data="set_q_720"), InlineKeyboardButton(f"🎬 {T(uid, 'quality_1080')}", callback_data="set_q_1080")],
-        [InlineKeyboardButton("🎬 2K", callback_data="set_q_2k"), InlineKeyboardButton("🎬 4K", callback_data="set_q_4k")],
-        [InlineKeyboardButton(f"✨ {T(uid, 'no_wm_btn')}", callback_data="mode_nowm"), InlineKeyboardButton(f"📃 {T(uid, 'playlist_btn')}", callback_data="mode_playlist")],
-        [InlineKeyboardButton(f"📸 {T(uid, 'story_btn')}", callback_data="mode_story"), InlineKeyboardButton(f"🔥 {T(uid, 'explore_btn')}", callback_data="mode_explore")],
-        [InlineKeyboardButton(f"🎞️ {T(uid, 'gif_btn')}", callback_data="mode_gif"), InlineKeyboardButton(f"🗜️ {T(uid, 'compress_btn')}", callback_data="mode_compress")],
-        [InlineKeyboardButton(f"🎧 {T(uid, 'extract_btn')}", callback_data="mode_extract"), InlineKeyboardButton(f"🎬 {T(uid, 'movies_btn')}", callback_data="mode_movies")],
-        [InlineKeyboardButton(f"🖼️ {T(uid, 'wallpaper_btn')}", callback_data="mode_wallpaper"), InlineKeyboardButton(f"🔍 {T(uid, 'search_btn')}", callback_data="search")],
-        [InlineKeyboardButton(f"🖼️ {T(uid, 'pdf_btn')}", callback_data="pdf_menu"), InlineKeyboardButton(f"🌐 {T(uid, 'translate_btn')}", callback_data="tr_menu")],
-        [InlineKeyboardButton(f"📝 {T(uid, 'summarize_btn')}", callback_data="sum_menu"), InlineKeyboardButton(f"⭐ {T(uid, 'fav_btn')}", callback_data="fav_info")],
-        [InlineKeyboardButton(f"📂 {T(uid, 'history_btn')}", callback_data="history_info"), InlineKeyboardButton(f"🎁 {T(uid, 'points_btn')}", callback_data="points_info")],
-        [InlineKeyboardButton(f"{vip_txt}", callback_data="vip_info"), InlineKeyboardButton(f"🌐 {T(uid, 'lang_btn')}", callback_data="lang")],
-        [InlineKeyboardButton(f"📞 {T(uid, 'support_btn')}", callback_data="support")],
+        [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="help_mp3"), InlineKeyboardButton(f"📥 {T(uid, 'download_video')}", callback_data="help_video")],
+        [InlineKeyboardButton(f"🎬 {T(uid, 'quality_1080')}", callback_data="help_video"), InlineKeyboardButton(f"🎬 {T(uid, 'quality_720')}", callback_data="help_video")],
+        [InlineKeyboardButton(f"🔍 {T(uid, 'search_btn')}", callback_data="search"), InlineKeyboardButton(f"🖼️ {T(uid, 'pdf_btn')}", callback_data="pdf_menu")],
+        [InlineKeyboardButton(f"🌐 {T(uid, 'translate_btn')}", callback_data="tr_menu"), InlineKeyboardButton(f"📝 {T(uid, 'summarize_btn')}", callback_data="sum_menu")],
+        [InlineKeyboardButton(f"⭐ {T(uid, 'fav_btn')}", callback_data="fav_info"), InlineKeyboardButton(f"📂 {T(uid, 'history_btn')}", callback_data="history_info")],
+        [InlineKeyboardButton(f"🎁 {T(uid, 'points_btn')}", callback_data="points_info"), InlineKeyboardButton(f"{vip_txt}", callback_data="vip_info")],
+        [InlineKeyboardButton(f"🌐 {T(uid, 'lang_btn')}", callback_data="lang"), InlineKeyboardButton(f"📞 {T(uid, 'support_btn')}", callback_data="support")],
     ]
     if int(uid) == ADMIN_ID and ADMIN_ID != 0:
         kb.append([InlineKeyboardButton(f"👑 {T(uid, 'admin_btn')}", callback_data="admin_info")])
@@ -350,279 +305,65 @@ def show_main_menu_text(uid, name):
     lines.append(f"🎁 {T(uid, 'points')}: {points} / 100")
     lines.append(f"👥 {T(uid, 'invites')}: {invites} / 50")
     lines.append(vip_line)
-    lines.append(f"🎬 الجودة الحالية: {u.get('quality','720')}")
     lines.append("────────────────")
     lines.append(f"👇 {T(uid, 'send_link')}")
     return "\n".join(lines)
 
-def expand_url(url):
+def do_search(query):
     try:
-        if "vt.tiktok.com" in url or "vm.tiktok.com" in url or "t.co/" in url or "bit.ly" in url:
-            r = requests.get(url, allow_redirects=True, timeout=12, headers={"User-Agent": "Mozilla/5.0"})
-            if r.url and r.url != url:
-                return r.url
-    except Exception as e:
-        print(f"expand err: {e}")
-    return url
-
-def download_file(url, timeout=60):
-    r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"})
-    r.raise_for_status()
-    return r.content
-
-def compress_video_file(in_path, out_path, crf=28):
-    if not shutil.which("ffmpeg"):
-        return False, "ffmpeg not found"
-    cmd = ["ffmpeg", "-y", "-i", in_path, "-vcodec", "libx264", "-crf", str(crf), "-preset", "veryfast", "-vf", "scale='min(1280,iw)':-2", "-acodec", "aac", "-b:a", "128k", "-movflags", "+faststart", out_path]
-    try:
-        res = subprocess.run(cmd, capture_output=True, timeout=180)
-        if res.returncode != 0:
-            print("ffmpeg err: " + res.stderr.decode(errors="ignore")[-1000:])
-            return False, "ffmpeg failed"
-        if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-            return False, "output too small"
-        return True, "ok"
-    except subprocess.TimeoutExpired:
-        return False, "timeout"
-    except Exception as e:
-        return False, str(e)
-
-def download_tiktok_api(url):
-    url = expand_url(url)
-    try:
-        r = requests.get("https://www.tikwm.com/api/", params={"url": url}, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json().get("data", {}) if r.status_code == 200 else {}
-        if not data:
-            print(f"TikWM empty: {r.text[:500]}")
-            return [], "", url
-        title = data.get("title", "") or ""
-        video = data.get("play") or data.get("wmplay") or data.get("hdplay")
-        if video:
-            try:
-                vid_data = download_file(video)
-                if len(vid_data) > 10000:
-                    path = f"/tmp/tiktok_{int(time.time()*1000)}.mp4"
-                    with open(path, "wb") as f:
-                        f.write(vid_data)
-                    return [path], title, url
-            except Exception as e:
-                print(f"tiktok video dl err: {e}")
-        images = data.get("images", []) or []
-        if images:
-            paths = []
-            for i, img in enumerate(images[:10]):
-                try:
-                    d = download_file(img, timeout=20)
-                    p = f"/tmp/tiktok_img_{int(time.time()*1000)}_{i}.jpg"
-                    with open(p, "wb") as f:
-                        f.write(d)
-                    paths.append(p)
-                except Exception as e:
-                    print(f"img err: {e}")
-            if paths:
-                return paths, title, url
-        music = None
-        if isinstance(data.get("music_info"), dict):
-            music = data.get("music_info", {}).get("play")
-        if music:
-            try:
-                d = download_file(music, timeout=30)
-                p = f"/tmp/tiktok_music_{int(time.time()*1000)}.mp3"
-                with open(p, "wb") as f:
-                    f.write(d)
-                return [p], title, url
-            except:
-                pass
-    except Exception as e:
-        print("tiktok api err: " + str(e))
-    return [], "", url
-
-def download_instagram_api(url):
-    url = expand_url(url)
-    try:
-        base = f"/tmp/insta_{int(time.time()*1000)}"
-        opts = {"format": "best", "outtmpl": base + ".%(ext)s", "quiet": True, "nocheckcertificate": True, "socket_timeout": 60, "retries": 5, "noplaylist": True, "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15"}}
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, "socket_timeout": 30}
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-        files = [f for f in glob.glob(base + ".*") if not f.endswith(".part")]
-        if files:
-            return files
+            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+            entries = info.get("entries", []) if info else []
+            results = []
+            for e in entries:
+                if not e:
+                    continue
+                vid = e.get("id", "")
+                title = e.get("title", query)
+                if vid and len(vid) == 11:
+                    results.append({"id": vid, "title": title})
+            if results:
+                return results
     except Exception as e:
-        print(f"insta yt-dlp failed: {e}")
-    try:
-        dd_url = url.replace("instagram.com", "ddinstagram.com").replace("www.", "")
-        return ["DD:" + dd_url]
-    except Exception as e:
-        print(f"dd failed: {e}")
+        print("ytsearch failed: " + str(e))
     return []
 
-def download_facebook_api(url, base):
-    try:
-        opts = {"format": "best", "outtmpl": base + ".%(ext)s", "quiet": False, "nocheckcertificate": True, "socket_timeout": 60, "retries": 5, "noplaylist": True, "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)"}}
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-        files = [f for f in glob.glob(base + ".*") if not f.endswith(".part")]
-        return files
-    except Exception as e:
-        print(f"fb failed: {e}")
-        return []
-
-def download_with_ytdlp(url, base, want_audio=False, quality="720", no_wm=False, playlist=False):
-    if "youtube.com" in url or "youtu.be" in url:
-        return []
-    url = expand_url(url)
-    if "tiktok.com" in url:
-        paths, title, _ = download_tiktok_api(url)
-        if paths:
-            if want_audio and paths[0].endswith(".mp4"):
-                out = base + ".mp3"
-                try:
-                    subprocess.run(["ffmpeg", "-y", "-i", paths[0], "-vn", "-ab", "192k", out], capture_output=True, timeout=90)
-                    if os.path.exists(out) and os.path.getsize(out) > 1000:
-                        try: os.remove(paths[0])
-                        except: pass
-                        return [out]
-                except Exception as e:
-                    print(f"mp3 convert err: {e}")
-            return paths
-        print("TikTok API failed, trying yt-dlp fallback")
-    if "instagram.com" in url:
-        files = download_instagram_api(url)
-        if files:
-            return files
-    if "facebook.com" in url or "fb.watch" in url:
-        files = download_facebook_api(url, base)
-        if files:
-            return files
+def download_with_ytdlp(url, base, want_audio=False, quality="720"):
     try:
         for f in glob.glob(base + ".*"):
-            try: os.remove(f)
-            except: pass
-        opts = {"format": "bestvideo+bestaudio/best", "outtmpl": base + ".%(ext)s", "quiet": False, "nocheckcertificate": True, "socket_timeout": 90, "retries": 5, "noplaylist": not playlist, "http_headers": {"User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36", "Accept-Language": "en-US,en;q=0.9"}}
+            try:
+                os.remove(f)
+            except:
+                pass
+        if want_audio:
+            fmt = "bestaudio/best"
+        else:
+            if quality == "1080":
+                fmt = "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
+            else:
+                fmt = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+        opts = {
+            "format": fmt,
+            "outtmpl": base + ".%(ext)s",
+            "quiet": True,
+            "no_warnings": True,
+            "nocheckcertificate": True,
+            "socket_timeout": 90,
+            "cookiefile": "/etc/secrets/cookies.txt" if os.path.exists("/etc/secrets/cookies.txt") else ("cookies.txt" if os.path.exists("cookies.txt") else None),
+            "extractor_args": {"youtube": {"player_client": [["android", "ios", "web", "tv", "mweb"]], "player_skip": [ "configs"]}},
+            "http_headers": {"User-Agent": "Mozilla/5.0"},
+        }
         if want_audio:
             opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
-        files = [f for f in glob.glob(base + ".*") if not f.endswith(".part") and not f.endswith(".ytdl")]
-        if len(files) > 1:
-            files = sorted(files, key=lambda x: os.path.getsize(x), reverse=True)
+        files = glob.glob(base + ".*")
+        files = [f for f in files if not f.endswith(".part")]
         return files
     except Exception as e:
         print("download failed: " + str(e))
         return []
-
-def save_history(u, url, title=""):
-    hist = u.get("history", [])
-    new_hist = []
-    for h in hist:
-        if isinstance(h, dict):
-            new_hist.append(h)
-        else:
-            new_hist.append({"url": str(h), "title": str(h)[:60], "time": int(time.time())})
-    new_hist = [x for x in new_hist if x.get("url") != url]
-    new_hist.append({"url": url, "title": (title or url)[:80], "time": int(time.time())})
-    u["history"] = new_hist[-30:]
-    save_data()
-
-def add_fav(u, url, title=""):
-    favs = u.get("favs", [])
-    new = []
-    for f in favs:
-        if isinstance(f, dict):
-            new.append(f)
-        else:
-            new.append({"url": str(f), "title": str(f)[:60], "time": int(time.time())})
-    new = [x for x in new if x.get("url") != url]
-    new.append({"url": url, "title": (title or url)[:80], "time": int(time.time())})
-    u["favs"] = new[-30:]
-    save_data()
-
-def do_search(query):
-    try:
-        r = requests.get("https://www.tikwm.com/api/feed/search", params={"keywords": query, "count": 10, "cursor": 0}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json().get("data", {})
-        videos = data.get("videos", []) if isinstance(data, dict) else []
-        results = []
-        for v in videos[:5]:
-            vid = v.get("video_id") or v.get("id") or ""
-            title = v.get("title") or v.get("desc") or query
-            play = v.get("play") or ""
-            author = v.get("author", {}).get("nickname", "") if isinstance(v.get("author"), dict) else ""
-            uid_author = v.get("author", {}).get("unique_id", "tiktok") if isinstance(v.get("author"), dict) else "tiktok"
-            if vid:
-                results.append({"id": str(vid), "title": title[:60], "play": play, "author": author, "url": f"https://www.tiktok.com/@{uid_author}/video/{vid}"})
-        if results:
-            return results
-    except Exception as e:
-        print(f"tiktok search err: {e}")
-    return []
-
-def search_movies(query):
-    results = []
-    try:
-        r = requests.get("https://api.tvmaze.com/search/shows", params={"q": query}, timeout=10)
-        if r.status_code == 200 and r.json():
-            for item in r.json()[:5]:
-                s = item.get("show", {})
-                summary = re.sub(r'<[^>]+>', '', s.get("summary", "") or "")[:180]
-                results.append({"name": s.get("name", ""), "summary": summary or f"{s.get('premiered','')} - {s.get('status','')}", "url": s.get("url", "")})
-            if results:
-                return results
-    except Exception as e:
-        print(f"tvmaze err: {e}")
-    try:
-        r = requests.get("https://ar.wikipedia.org/w/api.php", params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 5}, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        if r.status_code == 200:
-            for item in r.json().get("query", {}).get("search", [])[:5]:
-                title = item.get("title", "")
-                snippet = re.sub(r'<[^>]+>', '', item.get("snippet", "") or "")[:180]
-                results.append({"name": title, "summary": snippet, "url": f"https://ar.wikipedia.org/wiki/{title.replace(' ', '_')}"})
-            if results:
-                return results
-    except Exception as e:
-        print(f"wiki movies err: {e}")
-    try:
-        r = requests.get("http://www.omdbapi.com/", params={"apikey": "trilogy", "s": query}, timeout=10)
-        if r.status_code == 200:
-            for item in r.json().get("Search", [])[:5]:
-                results.append({"name": item.get("Title", ""), "summary": f"{item.get('Year','')} - {item.get('Type','')}", "url": f"https://www.imdb.com/title/{item.get('imdbID','')}"})
-            if results:
-                return results
-    except Exception as e:
-        print(f"omdb err: {e}")
-    return results
-
-def get_wallpapers(query="nature"):
-    try:
-        r = requests.get("https://picsum.photos/v2/list", params={"page": 1, "limit": 5}, timeout=10)
-        if r.status_code == 200:
-            return [f"https://picsum.photos/id/{x['id']}/1080/1920" for x in r.json()]
-    except Exception as e:
-        print(f"wallpaper err: {e}")
-    return ["https://picsum.photos/1080/1920", "https://picsum.photos/1080/1920?random=1", "https://picsum.photos/1080/1920?random=2"]
-
-def get_trending():
-    try:
-        r = requests.get("https://www.tikwm.com/api/feed/list", params={"region": "EG", "count": 10}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        data = r.json().get("data", {})
-        videos = data.get("videos", []) if isinstance(data, dict) else []
-        res = []
-        for v in videos[:5]:
-            vid = v.get("video_id") or v.get("id") or ""
-            title = v.get("title") or v.get("desc") or "ترند"
-            if vid:
-                res.append({"id": str(vid), "title": title[:50], "play": v.get("play", ""), "url": f"https://www.tiktok.com/@tiktok/video/{vid}"})
-        if res:
-            return res
-    except Exception as e:
-        print(f"trend err: {e}")
-    try:
-        res2 = do_search("ترند مصر")
-        if res2:
-            return res2
-    except:
-        pass
-    return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -696,13 +437,17 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = get_user(uid)
     data = q.data or ""
     if data == "set_lang_ar":
-        u["lang"] = "ar"; reset_modes(u); save_data()
+        u["lang"] = "ar"
+        reset_modes(u)
+        save_data()
         name = q.from_user.first_name or ""
         await q.message.reply_text(T(uid, "lang_changed"))
         await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
         return
     if data == "set_lang_en":
-        u["lang"] = "en"; reset_modes(u); save_data()
+        u["lang"] = "en"
+        reset_modes(u)
+        save_data()
         name = q.from_user.first_name or ""
         await q.message.reply_text(T(uid, "lang_changed"))
         await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
@@ -710,90 +455,25 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u.get("lang"):
         await q.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
-    if data.startswith("set_q_"):
-        qq = data.replace("set_q_", "").upper()
-        if qq == "2K": qq = "2k"
-        if qq == "4K": qq = "4k"
-        u["quality"] = qq; save_data()
-        await q.message.reply_text(f"✅ {T(uid, 'quality_set')} {qq}\n\nابعت لينك دلوقتي وهيتحمل بالجودة دي")
-        return
-    if data == "mode_mp3":
-        u["download_mode"] = "audio"; save_data()
-        await q.message.reply_text("🎵 تمام، ابعت اللينك وهحوله MP3 على طول")
-        return
-    if data == "mode_video":
-        u["download_mode"] = "video"; save_data()
-        await q.message.reply_text(f"📥 تمام، اختار الجودة:", reply_markup=quality_keyboard(uid))
-        return
-    if data == "mode_nowm":
-        u["download_mode"] = "nowm"; save_data()
-        await q.message.reply_text("✨ تمام، ابعت لينك تيك توك وهجيبهولك من غير علامة مائية")
-        return
-    if data == "mode_playlist":
-        u["download_mode"] = "playlist"; save_data()
-        await q.message.reply_text("📃 ابعت لينك قايمة التشغيل")
-        return
-    if data == "mode_story":
-        reset_modes(u); u["story_mode"] = True; u["state"] = "story"; save_data()
-        await q.message.reply_text("📸 ابعت لينك الستوري من انستا على طول\nانسخ لينك الستوري من انستا وابعته هنا")
-        return
-    if data == "mode_explore":
-        await q.message.reply_text("🔥 بدور على الترند...")
-        trends = get_trending()
-        if not trends:
-            await q.message.reply_text(T(uid, "not_found")); return
-        btns = []
-        for t in trends:
-            title = t["title"][:35]
-            btns.append([InlineKeyboardButton(f"🎵 {title}", callback_data=f"pick_{t['id']}")])
-        btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
-        await q.message.reply_text("🔥 ترند تيك توك دلوقتي:", reply_markup=InlineKeyboardMarkup(btns))
-        return
-    if data == "mode_gif":
-        reset_modes(u); u["gif_mode"] = True; save_data()
-        await q.message.reply_text("🎞️ ابعت فيديو من موبايلك وهحوله GIF")
-        return
-    if data == "mode_compress":
-        reset_modes(u); u["compress_mode"] = True; save_data()
-        await q.message.reply_text("🗜️ ابعت فيديو من موبايلك وهضغطهولك عشان يتبعت بسهولة")
-        return
-    if data == "mode_extract":
-        reset_modes(u); u["state"] = "extract"; save_data()
-        await q.message.reply_text("🎧 ابعت فيديو من موبايلك وهطلعلك الصوت بتاعه MP3")
-        return
-    if data == "mode_movies":
-        reset_modes(u); u["movie_mode"] = True; u["state"] = "movies"; save_data()
-        await q.message.reply_text("🎬 اكتب اسم الفيلم او المسلسل اللي بتدور عليه بالعربي او الانجليزي")
-        return
-    if data == "mode_wallpaper":
-        reset_modes(u); u["wallpaper_mode"] = True; u["state"] = "wallpaper"; save_data()
-        await q.message.reply_text("🖼️ اكتب نوع الخلفية اللي عايزها: طبيعة، سيارات، انمي...")
-        return
     if data == "search":
         reset_modes(u); u["state"] = "search"; save_data()
         await q.message.reply_text(f"🔍 {T(uid, 'search_prompt')}")
-        return
-    if data == "lang":
+    elif data == "lang":
         await q.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
-        return
-    if data == "support":
+    elif data == "support":
         reset_modes(u); u["state"] = "support"; u["support_mode"] = True; save_data()
         await q.message.reply_text(f"📞 {T(uid, 'support_prompt')}")
-        return
-    if data == "tr_menu":
+    elif data == "tr_menu":
         reset_modes(u); u["translate_mode"] = True; save_data()
         await q.message.reply_text(T(uid, "translate_ask"))
-        return
-    if data == "sum_menu":
+    elif data == "sum_menu":
         reset_modes(u); u["summarize_mode"] = True; save_data()
         await q.message.reply_text(T(uid, "summarize_ask"))
-        return
-    if data == "pdf_menu":
+    elif data == "pdf_menu":
         reset_modes(u); u["pdf_mode"] = True; u["pdf_photos"] = []; save_data()
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ انهاء وتحويل", callback_data="pdf_finish")]])
         await q.message.reply_text(T(uid, "pdf_ask"), reply_markup=kb)
-        return
-    if data == "pdf_finish":
+    elif data == "pdf_finish":
         if not u.get("pdf_photos"):
             await q.message.reply_text(T(uid, "pdf_no_photos")); return
         await q.message.reply_text(T(uid, "downloading"))
@@ -806,117 +486,42 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 bio.seek(0)
                 img = Image.open(bio).convert("RGB")
                 images.append(img)
-            pdf_path = f"/tmp/{uid}_{int(time.time()*1000)}.pdf"
+            pdf_path = f"/tmp/{uid}_{int(time.time())}.pdf"
             images[0].save(pdf_path, save_all=True, append_images=images[1:])
             with open(pdf_path, "rb") as f:
                 await q.message.reply_document(f, filename="Nezel.pdf", caption=T(uid, "pdf_done"))
-            try: os.remove(pdf_path)
-            except: pass
-            u["pdf_photos"] = []; u["pdf_mode"] = False; save_data()
+            try:
+                os.remove(pdf_path)
+            except:
+                pass
         except Exception as e:
             print("pdf err: " + str(e))
             await q.message.reply_text(T(uid, "download_failed"))
-        return
-    if data == "help_mp3" or data == "help_video" or data == "help":
+    elif data == "help_mp3" or data == "help_video" or data == "help":
         await q.message.reply_text(T(uid, "help_text"))
-        return
-    if data == "vip_info":
+    elif data == "vip_info":
         if is_vip(uid):
             days = int((float(u.get("vip", 0)) - time.time()) // 86400) + 1
             await q.message.reply_text(f"👑 انت VIP 👑\n\nفاضل في VIP {max(1, days)} يوم\n\n⚡ تحميل اسرع\n🎵 جودة 1080 كاملة\n🚫 من غير اعلانات\n\nشكرا انك معانا ❤️")
         else:
             kb_vip = InlineKeyboardMarkup([[InlineKeyboardButton("📞 كلم الادمن للاشتراك", url="https://t.me/ccccbcv")], [InlineKeyboardButton("⬅️ رجوع", callback_data="home")]])
             await q.message.reply_text(f"👑 VIP - نزل\n\nانت لسه مش VIP\n\n✨ مميزات VIP لمدة شهر:\n⚡ تحميل اسرع من غير انتظار\n🎵 جودة 1080 كاملة\n🚫 من غير اعلانات\n⭐ اولوية في الدعم\n\n💰 السعر: 50 جنيه / شهر\n\n📌 عشان تشترك:\n1- حول 50 جنيه\n2- دوس على زرار كلم الادمن تحت\n3- ابعتله الاي دي ده:\n🆔 {uid}\n\nوهيفعلك VIP في نفس اليوم 👑\n\n🎁 نقطك: {u.get('points', 0)} من 100\n👥 دعواتك: {u.get('invites', 0)} من 50", reply_markup=kb_vip)
-        return
-    if data == "points_info":
+    elif data == "points_info":
         link = f"https://t.me/{context.bot.username}?start=inv_{uid}"
         await q.message.reply_text(f"🎁 {T(uid, 'points')}: {u.get('points', 0)} / 100\n👥 {T(uid, 'invites')}: {u.get('invites', 0)} / 50\n\n🔗 لينك دعوتك:\n{link}")
-        return
-    if data == "history_info":
+    elif data == "history_info":
         hist = u.get("history", [])
         if not hist:
             await q.message.reply_text(T(uid, "history_empty")); return
-        btns = []
-        for idx, h in enumerate(hist[-10:]):
-            real_idx = len(hist) - len(hist[-10:]) + idx
-            if isinstance(h, dict):
-                title = h.get("title", "")[:30] or h.get("url", "")[:30]
-            else:
-                title = str(h)[:30]
-            btns.append([InlineKeyboardButton(f"▶️ {title}", callback_data=f"hist_{real_idx}")])
-        btns.append([InlineKeyboardButton("🗑️ مسح السجل", callback_data="hist_clear")])
-        btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
-        await q.message.reply_text(f"📂 {T(uid, 'history_btn')} - دوس على اي واحد عشان تحمله تاني:", reply_markup=InlineKeyboardMarkup(btns))
-        return
-    if data == "hist_clear":
-        u["history"] = []; save_data()
-        await q.message.reply_text("🗑️ تم مسح السجل")
-        return
-    if data.startswith("hist_"):
-        try:
-            idx = int(data.replace("hist_", ""))
-            h = u.get("history", [])[idx]
-            url = h.get("url") if isinstance(h, dict) else str(h)
-            await q.message.reply_text(T(uid, "downloading"))
-            base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-            files = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality", "720"))
-            if files:
-                if files[0].startswith("DD:"):
-                    await q.message.reply_text(f"📥 افتح اللينك ده: {files[0][3:]}")
-                elif files[0].endswith(".jpg"):
-                    await q.message.reply_photo(open(files[0], "rb"))
-                else:
-                    with open(files[0], "rb") as f:
-                        await q.message.reply_video(f)
-                try: os.remove(files[0])
-                except: pass
-            else:
-                await q.message.reply_text(T(uid, "download_failed"))
-        except Exception as e:
-            await q.message.reply_text(T(uid, "download_failed") + f" {e}")
-        return
-    if data == "fav_info":
+        txt = "\n".join(hist[-10:])
+        await q.message.reply_text(f"📂 {T(uid, 'history_btn')}:\n{txt}")
+    elif data == "fav_info":
         favs = u.get("favs", [])
         if not favs:
             await q.message.reply_text(T(uid, "fav_empty")); return
-        btns = []
-        for idx, h in enumerate(favs[-10:]):
-            real_idx = len(favs) - len(favs[-10:]) + idx
-            if isinstance(h, dict):
-                title = h.get("title", "")[:30] or h.get("url", "")[:30]
-            else:
-                title = str(h)[:30]
-            btns.append([InlineKeyboardButton(f"⭐ {title}", callback_data=f"favdl_{real_idx}")])
-        btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
-        await q.message.reply_text(f"⭐ {T(uid, 'fav_btn')} - دوس عشان تحمل:", reply_markup=InlineKeyboardMarkup(btns))
-        return
-    if data.startswith("favdl_"):
-        try:
-            idx = int(data.replace("favdl_", ""))
-            h = u.get("favs", [])[idx]
-            url = h.get("url") if isinstance(h, dict) else str(h)
-            await q.message.reply_text(T(uid, "downloading"))
-            base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-            files = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality", "720"))
-            if files:
-                if files[0].startswith("DD:"):
-                    await q.message.reply_text(files[0][3:])
-                else:
-                    with open(files[0], "rb") as f:
-                        await q.message.reply_video(f)
-                try: os.remove(files[0])
-                except: pass
-            else:
-                await q.message.reply_text(T(uid, "download_failed"))
-        except Exception as e:
-            await q.message.reply_text(T(uid, "download_failed"))
-        return
-    if data.startswith("favadd_"):
-        if u.get("last_link"):
-            add_fav(u, u.get("last_link"), u.get("last_link"))
-            await q.message.reply_text("⭐ اتضاف للمفضلة")
-        return
-    if data == "admin_info":
+        txt = "\n".join(favs[-10:])
+        await q.message.reply_text(f"⭐ {T(uid, 'fav_btn')}:\n{txt}")
+    elif data == "admin_info":
         if int(uid) != ADMIN_ID:
             await q.message.reply_text(T(uid, "help_text")); return
         total = len(DATA["users"])
@@ -927,72 +532,46 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ رجوع", callback_data="home")],
         ])
         await q.message.reply_text(f"👑 لوحة تحكم الادمن\n\n👥 عدد المستخدمين: {total}\n💎 عدد الـ VIP: {vip_count}", reply_markup=kb_admin)
-        return
-    if data == "admin_addvip":
+    elif data == "admin_addvip":
         if int(uid) != ADMIN_ID: return
         reset_modes(u); u["state"] = "admin_addvip"; save_data()
         await q.message.reply_text("💎 ابعت الاي دي بتاع المستخدم اللي عايز تفعله VIP")
-        return
-    if data == "admin_delvip":
+    elif data == "admin_delvip":
         if int(uid) != ADMIN_ID: return
         reset_modes(u); u["state"] = "admin_delvip"; save_data()
         await q.message.reply_text("❌ ابعت الاي دي بتاع المستخدم اللي عايز تلغي منه VIP")
-        return
-    if data == "admin_stats":
+    elif data == "admin_stats":
         if int(uid) != ADMIN_ID: return
         total = len(DATA["users"])
         vip_count = sum(1 for x in DATA["users"].values() if isinstance(x, dict) and float(x.get("vip", 0)) > time.time())
         total_points = sum(int(x.get("points", 0)) for x in DATA["users"].values() if isinstance(x, dict))
         await q.message.reply_text(f"📊 احصائيات البوت\n\n👥 المستخدمين: {total}\n💎 VIP: {vip_count}\n🎁 مجموع النقط: {total_points}")
-        return
-    if data == "home":
+    elif data == "home":
         name = q.from_user.first_name or ""
         await q.message.reply_text(show_main_menu_text(uid, name), reply_markup=main_keyboard(uid))
-        return
-    if data == "convert_mp3_last":
+    elif data == "convert_mp3_last":
         url = u.get("last_link", "")
         if not url:
             await q.message.reply_text(T(uid, "no_link_mp3")); return
         await q.message.reply_text(T(uid, "converting_mp3"))
-        base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000)) + "_mp3"
+        base = "/tmp/" + str(uid) + "_" + str(int(time.time())) + "_mp3"
         files = download_with_ytdlp(url, base, want_audio=True, quality="720")
         if not files:
             await q.message.reply_text(T(uid, "download_failed")); return
-        if files[0].startswith("DD:"):
-            await q.message.reply_text(files[0][3:]); return
         with open(files[0], "rb") as f:
             await q.message.reply_audio(f, title="Nezel Audio")
-        try: os.remove(files[0])
-        except: pass
-        return
-    if data.startswith("dl_"):
-        await handle_dl(update, context)
-        return
+        try:
+            os.remove(files[0])
+        except:
+            pass
 
 async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    try:
-        await q.answer()
-    except:
-        pass
+    await q.answer()
     uid = q.from_user.id
-    u = get_user(uid)
     data = q.data or ""
-    if data.startswith("dl_tiktok_"):
-        vid = data.replace("dl_tiktok_", "")
-        await q.message.reply_text(T(uid, "downloading"))
-        url = f"https://www.tiktok.com/@tiktok/video/{vid}"
-        paths, title, _ = download_tiktok_api(url)
-        if paths:
-            with open(paths[0], "rb") as f:
-                await q.message.reply_video(f, caption=title[:200] if title else "")
-            try: os.remove(paths[0])
-            except: pass
-        else:
-            await q.message.reply_text(T(uid, "download_failed"))
-        return
     want_audio = False
-    quality = u.get("quality", "720")
+    quality = "720"
     vid = ""
     if data.startswith("dl_audio_"):
         vid = data.replace("dl_audio_", ""); want_audio = True
@@ -1000,28 +579,26 @@ async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vid = data.replace("dl_1080_", ""); quality = "1080"
     elif data.startswith("dl_720_"):
         vid = data.replace("dl_720_", ""); quality = "720"
-    elif data.startswith("dl_2k_"):
-        vid = data.replace("dl_2k_", ""); quality = "2k"
-    elif data.startswith("dl_4k_"):
-        vid = data.replace("dl_4k_", ""); quality = "4k"
     elif data.startswith("dl_video_"):
-        vid = data.replace("dl_video_", ""); quality = u.get("quality", "720")
+        vid = data.replace("dl_video_", ""); quality = "720"
     else:
         return
-    u["quality"] = quality; save_data()
     await q.message.reply_text(T(uid, "downloading"))
     try:
-        url = f"https://www.tiktok.com/@tiktok/video/{vid}"
-        paths, title, _ = download_tiktok_api(url)
-        if not paths:
+        base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
+        yt_url = "https://www.youtube.com/watch?v=" + vid
+        files = download_with_ytdlp(yt_url, base, want_audio=want_audio, quality=quality)
+        if not files:
             await q.message.reply_text(T(uid, "download_failed")); return
-        with open(paths[0], "rb") as f:
+        with open(files[0], "rb") as f:
             if want_audio:
                 await q.message.reply_audio(f)
             else:
-                await q.message.reply_video(f, caption=title[:200] if title else "")
-        try: os.remove(paths[0])
-        except: pass
+                await q.message.reply_video(f)
+        try:
+            os.remove(files[0])
+        except:
+            pass
     except Exception as e:
         await q.message.reply_text(f"{T(uid, 'download_failed')}\n{str(e)}")
 
@@ -1037,8 +614,6 @@ async def handle_choose_result(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data=f"dl_audio_{vid}")],
         [InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 720", callback_data=f"dl_720_{vid}")],
         [InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 1080", callback_data=f"dl_1080_{vid}")],
-        [InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 2K", callback_data=f"dl_2k_{vid}")],
-        [InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 4K", callback_data=f"dl_4k_{vid}")],
         [InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")],
     ])
     await q.message.reply_text(f"{T(uid, 'choose_format')}", reply_markup=kb)
@@ -1047,64 +622,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     u = get_user(uid)
     user = update.effective_user
-    if update.message.video or (update.message.document and update.message.document.mime_type and "video" in update.message.document.mime_type):
-        if u.get("gif_mode") or u.get("compress_mode") or u.get("state") == "extract":
-            try:
-                await update.message.reply_text("⏳ بحول الفيديو...")
-                if update.message.video:
-                    file_id = update.message.video.file_id
-                else:
-                    file_id = update.message.document.file_id
-                f = await context.bot.get_file(file_id)
-                ts = int(time.time()*1000)
-                in_path = f"/tmp/{uid}_{ts}_in.mp4"
-                await f.download_to_drive(in_path)
-                if u.get("gif_mode"):
-                    out_path = f"/tmp/{uid}_{ts}_out.gif"
-                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], capture_output=True, timeout=90)
-                    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                        await update.message.reply_text("الـ ffmpeg مش شغال على السيرفر، جرب تاني او كلم الادمن")
-                    else:
-                        with open(out_path, "rb") as ff:
-                            await update.message.reply_document(ff, filename="Nezel.gif")
-                        try: os.remove(out_path)
-                        except: pass
-                elif u.get("compress_mode"):
-                    out_path = f"/tmp/{uid}_{ts}_out.mp4"
-                    ok, msg = compress_video_file(in_path, out_path, crf=28)
-                    if not ok:
-                        ok2, msg2 = compress_video_file(in_path, out_path, crf=32)
-                        if not ok2:
-                            await update.message.reply_text(f"الضغط فشل: {msg2} - اتأكد ان ffmpeg متثبت على السيرفر")
-                        else:
-                            ok = True
-                    if ok:
-                        if os.path.getsize(out_path) > 45*1024*1024:
-                            ok3, _ = compress_video_file(in_path, out_path, crf=35)
-                            if not ok3:
-                                pass
-                        with open(out_path, "rb") as ff:
-                            await update.message.reply_video(ff, caption="🗜️ تم ضغط الفيديو")
-                        try: os.remove(out_path)
-                        except: pass
-                else:
-                    out_path = f"/tmp/{uid}_{ts}_out.mp3"
-                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], capture_output=True, timeout=90)
-                    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                        await update.message.reply_text("استخراج الصوت فشل")
-                    else:
-                        with open(out_path, "rb") as ff:
-                            await update.message.reply_audio(ff, title="Nezel Audio")
-                        try: os.remove(out_path)
-                        except: pass
-                try: os.remove(in_path)
-                except: pass
-                reset_modes(u); save_data()
-                return
-            except Exception as e:
-                await update.message.reply_text(f"فشل: {e}")
-                reset_modes(u); save_data()
-                return
     if update.message.photo:
         if u.get("pdf_mode"):
             file_id = update.message.photo[-1].file_id
@@ -1118,6 +635,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not u.get("lang"):
         await update.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
         return
+            # تفعيل / الغاء VIP من الادمن
     if u.get("state") == "admin_addvip" and int(uid) == ADMIN_ID:
         target = text.strip()
         if not target.isdigit():
@@ -1130,7 +648,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ تم تفعيل VIP للمستخدم {target} لمدة 30 يوم")
         try:
             await context.bot.send_message(chat_id=int(target), text=T(int(target), "vip_congrats"))
-        except: pass
+        except:
+            pass
         name2 = user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
@@ -1155,7 +674,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name = user.first_name or ""
                 username = user.username
                 username_link = f'<a href="https://t.me/{username}">@{username}</a>' if username else "مفيش يوزر"
-                msg_text = (f"📩 <b>رسالة دعم جديدة</b>\n━━━━━━━━━━━━━━\n👤 الاسم: <a href=\"tg://user?id={uid}\">{html.escape(name)}</a>\n🆔 الاي دي: <a href=\"tg://user?id={uid}\">{uid}</a>\n🔗 يوزر: {username_link}\n━━━━━━━━━━━━━━\n💬 الرسالة:\n{html.escape(text)}\n━━━━━━━━━━━━━━\nللرد اكتب:\n<code>/reply {uid} رسالتك</code>")
+                msg_text = (
+                    f"📩 <b>رسالة دعم جديدة</b>\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"👤 الاسم: <a href=\"tg://user?id={uid}\">{html.escape(name)}</a>\n"
+                    f"🆔 الاي دي: <a href=\"tg://user?id={uid}\">{uid}</a>\n"
+                    f"🔗 يوزر: {username_link}\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"💬 الرسالة:\n{html.escape(text)}\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"للرد اكتب:\n<code>/reply {uid} رسالتك</code>"
+                )
                 await context.bot.send_message(chat_id=ADMIN_ID, text=msg_text, parse_mode=ParseMode.HTML)
             except Exception as e:
                 print("Support forward failed: " + str(e))
@@ -1178,45 +707,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name2 = user.first_name or ""
         await update.message.reply_text(show_main_menu_text(uid, name2), reply_markup=main_keyboard(uid))
         return
-    if u.get("state") == "story" or u.get("story_mode"):
-        reset_modes(u); save_data()
-        if "http" in text and "instagram.com" in text:
-            await update.message.reply_text("📸 بحمل الستوري...")
-            files = download_instagram_api(text)
-            if files:
-                if files[0].startswith("DD:"):
-                    await update.message.reply_text(f"📸 افتح اللينك ده وحمله: {files[0][3:]}")
-                else:
-                    with open(files[0], "rb") as f:
-                        await update.message.reply_video(f, caption="📸 ستوري من نزل")
-                    try: os.remove(files[0])
-                    except: pass
-            else:
-                await update.message.reply_text("مش عارف اجيب الستوري، انستا قافل الستوري من غير تسجيل دخول، ابعت لينك ريل او بوست بدل الستوري")
-        else:
-            await update.message.reply_text("📸 ابعت لينك الستوري مش اليوزر، انسخ لينك الستوري من انستا وابعته هنا")
-        return
-    if u.get("state") == "movies" or u.get("movie_mode"):
-        reset_modes(u); save_data()
-        await update.message.reply_text("🎬 بدور...")
-        res = search_movies(text)
-        if not res:
-            await update.message.reply_text(T(uid, "not_found")); return
-        out = "🎬 لقيت دول:\n\n"
-        for r in res:
-            out += f"🎬 {r['name']}\n{r['summary'][:150]}\n{r['url']}\n\n"
-        await update.message.reply_text(out)
-        return
-    if u.get("state") == "wallpaper" or u.get("wallpaper_mode"):
-        reset_modes(u); save_data()
-        await update.message.reply_text("🖼️ بجيبلك خلفيات...")
-        walls = get_wallpapers(text)
-        for w in walls[:3]:
-            try:
-                await update.message.reply_photo(w, caption="🖼️ خلفية HD من نزل")
-            except Exception as e:
-                print(f"wall send err: {e}")
-        return
     if u.get("state") == "search":
         u["state"] = "home"; save_data()
         msg = await update.message.reply_text(f"🔍 {T(uid, 'searching')}: {text}\n{T(uid, 'search_wait')}...")
@@ -1233,46 +723,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup(buttons)
         await msg.edit_text(f"{T(uid, 'choose_result')}:", reply_markup=kb)
         return
-    if "http" in text and ("youtube.com" in text or "youtu.be" in text):
-        await update.message.reply_text("⚠️ يوتيوب اتلغى من البوت خالص\nابعت لينك من تيك توك او انستا او فيسبوك بدل يوتيوب")
-        return
-    if "http" in text and any(x in text for x in ["tiktok.com", "instagram.com", "facebook.com", "fb.watch", "vt.tiktok.com"]):
+    if "http" in text and any(x in text for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch"]):
         u["last_link"] = text
-        save_history(u, text, text[:60])
-        mode = u.get("download_mode", "video")
-        want_audio = (mode == "audio")
-        no_wm = (mode == "nowm")
-        is_playlist = (mode == "playlist")
-        ql = u.get("quality", "720")
+        hist = u.get("history", [])
+        hist.append(text[:100])
+        u["history"] = hist[-20:]
+        save_data()
         await update.message.reply_text(T(uid, "downloading"))
         try:
-            base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-            files = download_with_ytdlp(text, base, want_audio=want_audio, quality=ql, no_wm=no_wm, playlist=is_playlist)
+            base = "/tmp/" + str(uid) + "_" + str(int(time.time()))
+            files = download_with_ytdlp(text, base, want_audio=False, quality="720")
             if files:
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="convert_mp3_last")],
-                    [InlineKeyboardButton("⭐ اضافة للمفضلة", callback_data="favadd_")],
-                ])
-                if files[0].startswith("DD:"):
-                    await update.message.reply_text(f"📥 افتح اللينك ده وحمله: {files[0][3:]}", reply_markup=kb)
-                elif files[0].endswith(".jpg") or files[0].endswith(".jpeg") or files[0].endswith(".png"):
-                    for fp in files:
-                        try:
-                            with open(fp, "rb") as f:
-                                await update.message.reply_photo(f)
-                            try: os.remove(fp)
-                            except: pass
-                        except Exception as e:
-                            print(f"photo send err: {e}")
-                    await update.message.reply_text("📸 تم تحميل الصور", reply_markup=kb)
-                else:
-                    with open(files[0], "rb") as f:
-                        if want_audio:
-                            await update.message.reply_audio(f, reply_markup=kb)
-                        else:
-                            await update.message.reply_video(f, reply_markup=kb)
-                    try: os.remove(files[0])
-                    except: pass
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="convert_mp3_last")]])
+                with open(files[0], "rb") as f:
+                    await update.message.reply_video(f, reply_markup=kb)
+                try:
+                    os.remove(files[0])
+                except:
+                    pass
             else:
                 await update.message.reply_text(T(uid, "download_failed"))
         except Exception as e:
@@ -1294,8 +762,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_message))
-    print("Bot started - No YouTube, TikTok/Insta/FB only")
+    print("Bot started")
     app.run_polling()
 
 if __name__ == "__main__":

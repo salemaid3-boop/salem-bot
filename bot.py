@@ -310,7 +310,6 @@ def compress_video_file(in_path, out_path, crf=28):
     except Exception as e: return False, str(e)
 
 async def ensure_size_ok(path, uid):
-    # لو أكبر من 49 ميجا ضغط أوتوماتيك
     try:
         if not path or not os.path.exists(path): return None
         if os.path.getsize(path) <= MAX_TG_SIZE: return path
@@ -409,7 +408,61 @@ def format_for_quality(quality="720", want_audio=False):
     h = {"720": 720, "1080": 1080, "2k": 1440, "4k": 2160}.get(q, 720)
     return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
 
+# ===== FIXED DOWNLOAD - TikTok via API + yt-dlp with impersonate =====
+def get_tiktok_id_from_url(url):
+    try:
+        r = requests.get(url, allow_redirects=True, timeout=15, headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"})
+        final = r.url
+        m = re.search(r'/video/(\d+)', final)
+        if m: return m.group(1), final
+        return None, final
+    except:
+        return None, url
+
+def download_tiktok_via_api(url, base, want_audio=False):
+    try:
+        vid, final_url = get_tiktok_id_from_url(url)
+        for try_url in [url, final_url]:
+            if not try_url: continue
+            r = requests.get("https://www.tikwm.com/api/", params={"url": try_url, "hd": 1}, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200: continue
+            j = r.json()
+            data = j.get("data", {})
+            if not data: continue
+            if want_audio:
+                audio_url = data.get("music") or data.get("music_info", {}).get("play") if isinstance(data.get("music_info"), dict) else None
+                if audio_url:
+                    ar = requests.get(audio_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
+                    if ar.status_code == 200 and len(ar.content) > 5000:
+                        out = base + ".mp3"
+                        with open(out, "wb") as f: f.write(ar.content)
+                        return [out], data.get("cover")
+                continue
+            video_url = data.get("play") or data.get("wmplay") or data.get("hdplay")
+            if not video_url: continue
+            vr = requests.get(video_url, timeout=60, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"})
+            if vr.status_code == 200 and len(vr.content) > 10000:
+                out = base + ".mp4"
+                with open(out, "wb") as f: f.write(vr.content)
+                thumb = data.get("cover") or data.get("origin_cover")
+                return [out], thumb
+        return [], None
+    except Exception as e:
+        print("tikwm err: " + str(e))
+        return [], None
+
+def download_facebook_via_api(url, base):
+    # فيسبوك: محاولة عبر yt-dlp فقط مع impersonate، لو فشل نرجع فاضي
+    return [], None
+
 def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=None):
+    plat = platform_of(url)
+    # 1. تيك توك: API الاول - بيشتغل على Railway
+    if plat == "tiktok":
+        files, thumb = download_tiktok_via_api(url, base, want_audio=want_audio)
+        if files:
+            return files, thumb
+        print("tikwm failed, fallback to yt-dlp")
     try:
         for f in glob.glob(base + ".*"):
             try: os.remove(f)
@@ -424,19 +477,34 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=
                         pct = int(dl * 100 / total)
                         progress_cb(pct)
                 except: pass
-        opts = {"format": fmt, "outtmpl": base + ".%(ext)s", "quiet": True, "no_warnings": True, "nocheckcertificate": True, "socket_timeout": 90, "cookiefile": None, "progress_hooks": [hook] if progress_cb else [], "extractor_args": {"youtube": {"player_client": [["android", "ios", "web", "tv", "mweb"]], "player_skip": ["configs"]}}, "http_headers": {"User-Agent": "Mozilla/5.0"}}
-        if want_audio: opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+        opts = {
+            "format": fmt, "outtmpl": base + ".%(ext)s",
+            "quiet": True, "no_warnings": True, "nocheckcertificate": True,
+            "socket_timeout": 90, "retries": 3, "noplaylist": True,
+            "progress_hooks": [hook] if progress_cb else [],
+            "impersonate": "chrome",
+            "extractor_args": {"youtube": {"player_client": [["android", "ios", "web"]]}},
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            }
+        }
+        if want_audio:
+            opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             thumb = info.get("thumbnail") if isinstance(info, dict) else None
         files = [f for f in glob.glob(base + ".*") if not f.endswith(".part")]
+        if not files and plat == "tiktok":
+            return download_tiktok_via_api(url, base, want_audio=want_audio)
         return files, thumb
     except Exception as e:
         print("download failed: " + str(e))
+        if plat == "tiktok":
+            return download_tiktok_via_api(url, base, want_audio=want_audio)
         return [], None
 
 def download_playlist(url, uid, quality="720"):
-    # قايمة تشغيل بجد - أول 5
     try:
         opts = {"quiet": True, "extract_flat": True, "skip_download": True, "socket_timeout": 30}
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -765,7 +833,6 @@ async def handle_choose_result(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def do_download_flow(message, uid, url, want_audio=False, quality="720", is_playlist=False):
     u = get_user(uid)
-    # Rate limit - 3 ثواني بين كل تحميل
     now = time.time()
     if now - float(u.get("last_dl_at", 0)) < 3 and not is_vip(uid):
         await message.reply_text(T(uid, "rate_limit")); return False
@@ -810,7 +877,6 @@ async def do_download_flow(message, uid, url, want_audio=False, quality="720", i
                 try: await message.bot.send_message(chat_id=ADMIN_ID, text=f"⚠️ تحميل فشل\n👤 {uid}\n🔗 {url}\n📱 {plat}")
                 except: pass
             return False
-        # 50 ميجا
         ok_files = []
         for fp in files:
             fixed = await ensure_size_ok(fp, uid)

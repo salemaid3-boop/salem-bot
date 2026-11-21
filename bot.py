@@ -355,13 +355,12 @@ def show_main_menu_text(uid, name):
     lines.append(f"👇 {T(uid, 'send_link')}")
     return "\n".join(lines)
 
-# ---------- Helpers - FIXED ----------
+# ---------- Helpers - FIXED ALL ----------
 def get_format_for_quality(quality="720", want_audio=False):
     if want_audio:
         return "bestaudio/best"
     qmap = {"720": 720, "1080": 1080, "2k": 1440, "2K": 1440, "4k": 2160, "4K": 2160}
     h = qmap.get(str(quality), 720)
-    # bestvideo with height limit + bestaudio, fallback to best with height limit
     return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/bestvideo+bestaudio/best"
 
 def expand_url(url):
@@ -375,7 +374,6 @@ def expand_url(url):
     return url
 
 def download_file(url, timeout=60):
-    # FIX: شلنا Referer بتاع tiktok.com لانه كان بيعمل بلوك من TikTok
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "*/*",
@@ -388,7 +386,7 @@ def download_file(url, timeout=60):
 def compress_video_file(in_path, out_path, crf=28):
     if not shutil.which("ffmpeg"):
         return False, "ffmpeg not found"
-    cmd = ["ffmpeg", "-y", "-i", in_path, "-vcodec", "libx264", "-crf", str(crf), "-preset", "veryfast", "-vf", "scale='min(1280,iw)':-2", "-acodec", "aac", "-b:a", "128k", "-movflags", "+faststart", out_path]
+    cmd = ["ffmpeg", "-y", "-i", in_path, "-vcodec", "libx264", "-crf", str(crf), "-preset", "veryfast", "-acodec", "aac", "-b:a", "128k", "-movflags", "+faststart", out_path]
     try:
         res = subprocess.run(cmd, capture_output=True, timeout=180)
         if res.returncode != 0:
@@ -405,16 +403,19 @@ def compress_video_file(in_path, out_path, crf=28):
 # ---------- Download - FIXED ----------
 def download_tiktok_api(url, quality="720"):
     url = expand_url(url)
-    # جرب TikWM مرتين ببارامترات مختلفة
-    apis = [
-        ("https://www.tikwm.com/api/", {"url": url, "hd": "1"}),
-        ("https://www.tikwm.com/api/", {"url": url}),
-    ]
-    for api_url, params in apis:
+    headers_browser = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.tikwm.com/",
+        "Origin": "https://www.tikwm.com",
+    }
+    # TikWM ب 3 دومينات + TiklyDown
+    for api_url in ["https://www.tikwm.com/api/", "https://api.tikwm.com/api/", "https://tikwm.com/api/"]:
         try:
-            r = requests.get(api_url, params=params, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.get(api_url, params={"url": url, "hd": "1"}, timeout=25, headers=headers_browser)
             if r.status_code != 200:
-                print(f"TikWM status {r.status_code}: {r.text[:300]}")
+                print(f"TikWM {api_url} status {r.status_code}")
                 continue
             try:
                 j = r.json()
@@ -422,24 +423,20 @@ def download_tiktok_api(url, quality="720"):
                 continue
             data = j.get("data", {}) if isinstance(j, dict) else {}
             if not data:
-                print(f"TikWM empty: {r.text[:500]}")
+                print(f"TikWM empty from {api_url}")
                 continue
             title = data.get("title", "") or ""
-            # FIX QUALITY: لو اختار 1080+ جيب hdplay الاول، لو 720 جيب play الاول
             q = str(quality).lower()
             high = q in ("1080", "2k", "4k")
             if high:
                 candidates = [data.get("hdplay"), data.get("play"), data.get("wmplay")]
             else:
                 candidates = [data.get("play"), data.get("hdplay"), data.get("wmplay")]
-            # شيل الفاضي والمتكرر
             seen = set()
-            uniq = []
-            for c in candidates:
-                if c and c not in seen:
-                    seen.add(c)
-                    uniq.append(c)
-            for video in uniq:
+            for video in candidates:
+                if not video or video in seen:
+                    continue
+                seen.add(video)
                 try:
                     vid_data = download_file(video)
                     if len(vid_data) > 10000:
@@ -448,7 +445,7 @@ def download_tiktok_api(url, quality="720"):
                             f.write(vid_data)
                         return [path], title, url
                 except Exception as e:
-                    print(f"tiktok video dl err {video[:60]}: {e}")
+                    print(f"tiktok video dl err: {e}")
                     continue
             images = data.get("images", []) or []
             if images:
@@ -479,8 +476,46 @@ def download_tiktok_api(url, quality="720"):
                 except:
                     pass
         except Exception as e:
-            print("tiktok api err: " + str(e))
+            print(f"TikWM try {api_url} err: {e}")
             continue
+    # TiklyDown fallback
+    try:
+        r = requests.get("https://api.tiklydown.eu.org/api/download", params={"url": url}, timeout=25, headers=headers_browser)
+        if r.status_code == 200:
+            j = r.json()
+            d = j.get("video", {}) if isinstance(j, dict) else {}
+            video_url = d.get("noWatermark") or d.get("watermark") or d.get("play")
+            title = j.get("title", "") or ""
+            if video_url:
+                try:
+                    vid_data = download_file(video_url)
+                    if len(vid_data) > 10000:
+                        path = f"/tmp/tiktok_{int(time.time()*1000)}.mp4"
+                        with open(path, "wb") as f:
+                            f.write(vid_data)
+                        return [path], title, url
+                except Exception as e:
+                    print(f"TiklyDown video err: {e}")
+            imgs = j.get("images", []) or []
+            if imgs:
+                paths = []
+                for i, img in enumerate(imgs[:10]):
+                    try:
+                        dd = download_file(img, timeout=20)
+                        if len(dd) < 1000:
+                            continue
+                        p = f"/tmp/tiktok_img_{int(time.time()*1000)}_{i}.jpg"
+                        with open(p, "wb") as f:
+                            f.write(dd)
+                        paths.append(p)
+                    except:
+                        pass
+                if paths:
+                    return paths, title, url
+        else:
+            print(f"TiklyDown status {r.status_code}")
+    except Exception as e:
+        print(f"TiklyDown err: {e}")
     return [], "", url
 
 def download_instagram_api(url, quality="720"):
@@ -533,7 +568,8 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", no_wm=False,
                 except Exception as e:
                     print(f"mp3 convert err: {e}")
             return paths
-        print("TikTok API failed, trying yt-dlp fallback")
+        print("TikTok API failed all providers")
+        return []
     if "instagram.com" in url:
         files = download_instagram_api(url, quality=quality)
         if files:
@@ -586,10 +622,9 @@ def add_fav(u, url, title=""):
     u["favs"] = new[-30:]
     save_data()
 
-# ---------- Search / Movies / Trend / Wallpapers ----------
 def do_search(query):
     try:
-        r = requests.get("https://www.tikwm.com/api/feed/search", params={"keywords": query, "count": 10, "cursor": 0}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get("https://www.tikwm.com/api/feed/search", params={"keywords": query, "count": 10, "cursor": 0}, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         data = r.json().get("data", {})
         videos = data.get("videos", []) if isinstance(data, dict) else []
         results = []
@@ -610,7 +645,7 @@ def do_search(query):
 def search_movies(query):
     results = []
     try:
-        r = requests.get("https://api.tvmaze.com/search/shows", params={"q": query}, timeout=10)
+        r = requests.get("https://api.tvmaze.com/search/shows", params={"q": query}, timeout=15)
         if r.status_code == 200 and r.json():
             for item in r.json()[:5]:
                 s = item.get("show", {})
@@ -621,7 +656,7 @@ def search_movies(query):
     except Exception as e:
         print(f"tvmaze err: {e}")
     try:
-        r = requests.get("https://ar.wikipedia.org/w/api.php", params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 5}, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get("https://ar.wikipedia.org/w/api.php", params={"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 5}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             for item in r.json().get("query", {}).get("search", [])[:5]:
                 title = item.get("title", "")
@@ -632,7 +667,7 @@ def search_movies(query):
     except Exception as e:
         print(f"wiki movies err: {e}")
     try:
-        r = requests.get("http://www.omdbapi.com/", params={"apikey": "trilogy", "s": query}, timeout=10)
+        r = requests.get("http://www.omdbapi.com/", params={"apikey": "trilogy", "s": query}, timeout=15)
         if r.status_code == 200:
             for item in r.json().get("Search", [])[:5]:
                 results.append({"name": item.get("Title", ""), "summary": f"{item.get('Year','')} - {item.get('Type','')}", "url": f"https://www.imdb.com/title/{item.get('imdbID','')}"})
@@ -644,7 +679,7 @@ def search_movies(query):
 
 def get_wallpapers(query="nature"):
     try:
-        r = requests.get("https://picsum.photos/v2/list", params={"page": 1, "limit": 5}, timeout=10)
+        r = requests.get("https://picsum.photos/v2/list", params={"page": 1, "limit": 5}, timeout=15)
         if r.status_code == 200:
             return [f"https://picsum.photos/id/{x['id']}/1080/1920" for x in r.json()]
     except Exception as e:
@@ -653,7 +688,7 @@ def get_wallpapers(query="nature"):
 
 def get_trending():
     try:
-        r = requests.get("https://www.tikwm.com/api/feed/list", params={"region": "EG", "count": 10}, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get("https://www.tikwm.com/api/feed/list", params={"region": "EG", "count": 10}, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
         data = r.json().get("data", {})
         videos = data.get("videos", []) if isinstance(data, dict) else []
         res = []
@@ -850,12 +885,18 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             images = []
             for file_id in u["pdf_photos"]:
-                tg_file = await context.bot.get_file(file_id)
-                bio = io.BytesIO()
-                await tg_file.download_to_memory(bio)
-                bio.seek(0)
-                img = Image.open(bio).convert("RGB")
-                images.append(img)
+                try:
+                    tg_file = await context.bot.get_file(file_id)
+                    bio = io.BytesIO()
+                    await tg_file.download_to_memory(bio)
+                    bio.seek(0)
+                    img = Image.open(bio).convert("RGB")
+                    images.append(img)
+                except Exception as e:
+                    print(f"pdf img err: {e}")
+                    continue
+            if not images:
+                await q.message.reply_text(T(uid, "download_failed")); return
             pdf_path = f"/tmp/{uid}_{int(time.time()*1000)}.pdf"
             images[0].save(pdf_path, save_all=True, append_images=images[1:])
             with open(pdf_path, "rb") as f:
@@ -1058,7 +1099,6 @@ async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vid = data.replace("dl_video_", ""); quality = u.get("quality", "720")
     else:
         return
-    # حفظ الجودة اللي اختارها من زرار البحث عشان المرة الجاية
     u["quality"] = quality; save_data()
     await q.message.reply_text(T(uid, "downloading"))
     try:
@@ -1346,7 +1386,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_message))
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_message))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
     print("Bot started - No YouTube, TikTok/Insta/FB only")
     app.run_polling()
 

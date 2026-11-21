@@ -355,14 +355,6 @@ def show_main_menu_text(uid, name):
     lines.append(f"👇 {T(uid, 'send_link')}")
     return "\n".join(lines)
 
-# ---------- Helpers ----------
-def get_format_for_quality(quality="720", want_audio=False):
-    if want_audio:
-        return "bestaudio/best"
-    qmap = {"720": 720, "1080": 1080, "2k": 1440, "2K": 1440, "4k": 2160, "4K": 2160}
-    h = qmap.get(str(quality), 720)
-    return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/bestvideo+bestaudio/best"
-
 def expand_url(url):
     try:
         if "vt.tiktok.com" in url or "vm.tiktok.com" in url or "t.co/" in url or "bit.ly" in url:
@@ -374,7 +366,6 @@ def expand_url(url):
     return url
 
 def download_file(url, timeout=60):
-    # رجعناه زي ما كان بالظبط - هو اللي كان شغال النهاردة
     r = requests.get(url, timeout=timeout, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.tiktok.com/"})
     r.raise_for_status()
     return r.content
@@ -396,7 +387,6 @@ def compress_video_file(in_path, out_path, crf=28):
     except Exception as e:
         return False, str(e)
 
-# ---------- Download - TikTok رجع زي ما كان بالظبط ----------
 def download_tiktok_api(url):
     url = expand_url(url)
     try:
@@ -447,12 +437,11 @@ def download_tiktok_api(url):
         print("tiktok api err: " + str(e))
     return [], "", url
 
-def download_instagram_api(url, quality="720"):
+def download_instagram_api(url):
     url = expand_url(url)
     try:
         base = f"/tmp/insta_{int(time.time()*1000)}"
-        fmt = get_format_for_quality(quality)
-        opts = {"format": fmt, "outtmpl": base + ".%(ext)s", "quiet": True, "nocheckcertificate": True, "socket_timeout": 60, "retries": 5, "noplaylist": True, "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15"}}
+        opts = {"format": "best", "outtmpl": base + ".%(ext)s", "quiet": True, "nocheckcertificate": True, "socket_timeout": 60, "retries": 5, "noplaylist": True, "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15"}}
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
         files = [f for f in glob.glob(base + ".*") if not f.endswith(".part")]
@@ -467,10 +456,9 @@ def download_instagram_api(url, quality="720"):
         print(f"dd failed: {e}")
     return []
 
-def download_facebook_api(url, base, quality="720"):
+def download_facebook_api(url, base):
     try:
-        fmt = get_format_for_quality(quality)
-        opts = {"format": fmt, "outtmpl": base + ".%(ext)s", "quiet": False, "nocheckcertificate": True, "socket_timeout": 60, "retries": 5, "noplaylist": True, "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)"}}
+        opts = {"format": "best", "outtmpl": base + ".%(ext)s", "quiet": False, "nocheckcertificate": True, "socket_timeout": 60, "retries": 5, "noplaylist": True, "http_headers": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X)"}}
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
         files = [f for f in glob.glob(base + ".*") if not f.endswith(".part")]
@@ -499,19 +487,18 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", no_wm=False,
             return paths
         print("TikTok API failed, trying yt-dlp fallback")
     if "instagram.com" in url:
-        files = download_instagram_api(url, quality=quality)
+        files = download_instagram_api(url)
         if files:
             return files
     if "facebook.com" in url or "fb.watch" in url:
-        files = download_facebook_api(url, base, quality=quality)
+        files = download_facebook_api(url, base)
         if files:
             return files
     try:
         for f in glob.glob(base + ".*"):
             try: os.remove(f)
             except: pass
-        fmt = get_format_for_quality(quality, want_audio=want_audio)
-        opts = {"format": fmt, "outtmpl": base + ".%(ext)s", "quiet": False, "nocheckcertificate": True, "socket_timeout": 90, "retries": 5, "noplaylist": not playlist, "http_headers": {"User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36", "Accept-Language": "en-US,en;q=0.9"}}
+        opts = {"format": "bestvideo+bestaudio/best", "outtmpl": base + ".%(ext)s", "quiet": False, "nocheckcertificate": True, "socket_timeout": 90, "retries": 5, "noplaylist": not playlist, "http_headers": {"User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/116.0.0.0 Mobile Safari/537.36", "Accept-Language": "en-US,en;q=0.9"}}
         if want_audio:
             opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1195,7 +1182,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reset_modes(u); save_data()
         if "http" in text and "instagram.com" in text:
             await update.message.reply_text("📸 بحمل الستوري...")
-            files = download_instagram_api(text, quality=u.get("quality", "720"))
+            files = download_instagram_api(text)
             if files:
                 if files[0].startswith("DD:"):
                     await update.message.reply_text(f"📸 افتح اللينك ده وحمله: {files[0][3:]}")

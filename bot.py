@@ -28,15 +28,13 @@ import yt_dlp
 import subprocess
 import shutil
 import asyncio
-import random
-from datetime import datetime, date
+from datetime import date
 from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "")
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "1159182662") or 0)
 except:
@@ -48,7 +46,6 @@ URL_RE = re.compile(r'https?://[^\s<>"]+')
 MAX_TG_SIZE = 49 * 1024 * 1024
 DOWNLOAD_SEM = asyncio.Semaphore(2)
 CANCEL_FLAGS = {}
-USER_LAST_DL = {}
 ACTIVE_MSGS = {}
 
 def extract_url(text):
@@ -63,7 +60,6 @@ def platform_of(url):
     if "youtube.com" in u or "youtu.be" in u: return "youtube"
     return "other"
 
-# ===== Persistence - atomic + backup + optional Postgres =====
 def load_data():
     for path in [DATA_FILE, BACKUP_FILE]:
         if os.path.exists(path):
@@ -408,7 +404,6 @@ def format_for_quality(quality="720", want_audio=False):
     h = {"720": 720, "1080": 1080, "2k": 1440, "4k": 2160}.get(q, 720)
     return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
 
-# ===== FIXED DOWNLOAD - TikTok via API + yt-dlp with impersonate =====
 def get_tiktok_id_from_url(url):
     try:
         r = requests.get(url, allow_redirects=True, timeout=15, headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"})
@@ -416,7 +411,7 @@ def get_tiktok_id_from_url(url):
         m = re.search(r'/video/(\d+)', final)
         if m: return m.group(1), final
         return None, final
-    except:
+    except Exception:
         return None, url
 
 def download_tiktok_via_api(url, base, want_audio=False):
@@ -426,11 +421,14 @@ def download_tiktok_via_api(url, base, want_audio=False):
             if not try_url: continue
             r = requests.get("https://www.tikwm.com/api/", params={"url": try_url, "hd": 1}, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
             if r.status_code != 200: continue
-            j = r.json()
-            data = j.get("data", {})
+            data = r.json().get("data", {})
             if not data: continue
             if want_audio:
-                audio_url = data.get("music") or data.get("music_info", {}).get("play") if isinstance(data.get("music_info"), dict) else None
+                audio_url = None
+                if isinstance(data.get("music_info"), dict):
+                    audio_url = data["music_info"].get("play")
+                if not audio_url:
+                    audio_url = data.get("music")
                 if audio_url:
                     ar = requests.get(audio_url, timeout=60, headers={"User-Agent": "Mozilla/5.0"})
                     if ar.status_code == 200 and len(ar.content) > 5000:
@@ -451,13 +449,8 @@ def download_tiktok_via_api(url, base, want_audio=False):
         print("tikwm err: " + str(e))
         return [], None
 
-def download_facebook_via_api(url, base):
-    # فيسبوك: محاولة عبر yt-dlp فقط مع impersonate، لو فشل نرجع فاضي
-    return [], None
-
 def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=None):
     plat = platform_of(url)
-    # 1. تيك توك: API الاول - بيشتغل على Railway
     if plat == "tiktok":
         files, thumb = download_tiktok_via_api(url, base, want_audio=want_audio)
         if files:
@@ -482,12 +475,7 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=
             "quiet": True, "no_warnings": True, "nocheckcertificate": True,
             "socket_timeout": 90, "retries": 3, "noplaylist": True,
             "progress_hooks": [hook] if progress_cb else [],
-            "impersonate": "chrome",
-            "extractor_args": {"youtube": {"player_client": [["android", "ios", "web"]]}},
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept-Language": "en-US,en;q=0.9",
-            }
+            "http_headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
         }
         if want_audio:
             opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
@@ -533,14 +521,20 @@ async def send_downloaded(msg_obj, files, want_audio, kb, thumb_url=None):
                     with open(thumb_path, "wb") as f: f.write(r.content)
             except: pass
         for fp in files:
+            if not fp or not os.path.exists(fp): continue
             if fp.endswith((".jpg", ".jpeg", ".png", ".webp")):
                 with open(fp, "rb") as f: await msg_obj.reply_photo(f)
             else:
                 with open(fp, "rb") as f:
                     if want_audio: await msg_obj.reply_audio(f, reply_markup=kb)
                     else:
-                        try: await msg_obj.reply_video(f, reply_markup=kb, thumbnail=thumb_path)
-                        except: await msg_obj.reply_video(f, reply_markup=kb)
+                        try:
+                            if thumb_path and os.path.exists(thumb_path):
+                                await msg_obj.reply_video(f, reply_markup=kb, thumbnail=open(thumb_path, "rb"))
+                            else:
+                                await msg_obj.reply_video(f, reply_markup=kb)
+                        except:
+                            with open(fp, "rb") as f2: await msg_obj.reply_video(f2, reply_markup=kb)
             try: os.remove(fp)
             except: pass
         if thumb_path:
@@ -563,10 +557,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inv = get_user(int(inviter))
             if str(uid) not in inv.get("invited_users", []):
                 inv["invited_users"].append(str(uid))
-                try: inv["points"] = int(inv.get("points", 0)) + 5
-                except: inv["points"] = 5
-                try: inv["invites"] = int(inv.get("invites", 0)) + 1
-                except: inv["invites"] = 1
+                inv["points"] = int(inv.get("points", 0)) + 5
+                inv["invites"] = int(inv.get("invites", 0)) + 1
                 save_data()
                 try: await context.bot.send_message(chat_id=int(inviter), text="🎉 حد دخل من لينكك! +5 نقاط")
                 except: pass
@@ -574,13 +566,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard())
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
     await update.message.reply_text("📖 أوامر البوت:\n\n/start - القايمة الرئيسية\n/help - المساعدة\n/stats - إحصائياتك\n/vip 123 - تفعيل VIP (أدمن)\n/reply 123 رسالة - رد على دعم (أدمن)\n/broadcast رسالة - رسالة للكل (أدمن)\n/ban 123 - حظر (أدمن)\n/unban 123 - فك حظر (أدمن)\n\nابعت لينك من تيك توك / انستا / فيس / يوتيوب وهيتحمل على طول")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     s = DATA.get("stats", {})
-    await update.message.reply_text(f"📊 إحصائيات البوت:\n\n👥 المستخدمين: {len(DATA['users'])}\n📥 تحميل كلي: {s.get('total',0)}\n📥 النهاردة: {s.get('today_count',0)}\n\n🎬 بالمنصة:\n" + "\n".join([f"{k}: {v}" for k,v in s.get('by_platform',{}).items()]) if s.get('by_platform') else "📊 لسه مفيش تحميلات")
+    bp = s.get("by_platform", {})
+    lines = "\n".join([f"{k}: {v}" for k, v in bp.items()]) if bp else "لسه مفيش تحميلات"
+    await update.message.reply_text(f"📊 إحصائيات البوت:\n\n👥 المستخدمين: {len(DATA['users'])}\n📥 تحميل كلي: {s.get('total',0)}\n📥 النهاردة: {s.get('today_count',0)}\n\n🎬 بالمنصة:\n{lines}")
 
 async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -893,6 +886,7 @@ async def do_download_flow(message, uid, url, want_audio=False, quality="720", i
         return True
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message: return
     uid = update.effective_user.id
     if is_banned(uid): await update.message.reply_text(T(uid, "banned_msg")); return
     u = get_user(uid); user = update.effective_user
@@ -905,7 +899,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f = await context.bot.get_file(file_id); ts = int(time.time()*1000); in_path = f"/tmp/{uid}_{ts}_in.mp4"; await f.download_to_drive(in_path)
                 if u.get("gif_mode"):
                     out_path = f"/tmp/{uid}_{ts}_out.gif"
-                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], capture_output=True, timeout=90)
+                    subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], capture_output=True, timeout=90)
                     if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000: await update.message.reply_text("الـ ffmpeg مش شغال على السيرفر")
                     else:
                         with open(out_path, "rb") as ff: await update.message.reply_document(ff, filename="Nezel.gif")
@@ -915,7 +909,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     out_path = f"/tmp/{uid}_{ts}_out.mp4"; ok, msg = compress_video_file(in_path, out_path, crf=28)
                     if not ok:
                         ok2, _ = compress_video_file(in_path, out_path, crf=32)
-                        if not ok2: await update.message.reply_text(f"الضغط فشل")
+                        if not ok2: await update.message.reply_text("الضغط فشل")
                         else: ok = True
                     if ok:
                         with open(out_path, "rb") as ff: await update.message.reply_video(ff, caption="🗜️ تم ضغط الفيديو")
@@ -923,7 +917,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except: pass
                 else:
                     out_path = f"/tmp/{uid}_{ts}_out.mp3"
-                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], capture_output=True, timeout=90)
+                    subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], capture_output=True, timeout=90)
                     if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000: await update.message.reply_text("استخراج الصوت فشل")
                     else:
                         with open(out_path, "rb") as ff: await update.message.reply_audio(ff, title="Nezel Audio")
@@ -942,8 +936,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif u.get("pdf_mode"):
             u["pdf_photos"].append(update.message.photo[-1].file_id); save_data()
             await update.message.reply_text(f"{T(uid, 'pdf_added')} {len(u['pdf_photos'])} ✅"); return
-        else: return
-        if not cap_url: return
+        else:
+            return
     else:
         text = (update.message.text or update.message.caption or "").strip()
     if not text: return

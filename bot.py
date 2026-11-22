@@ -23,12 +23,14 @@ import glob
 import re
 import io
 import html
+import copy
 import requests
 import yt_dlp
 import subprocess
 import shutil
 import asyncio
 import random
+from pathlib import Path
 from datetime import datetime, date
 from PIL import Image, ImageDraw, ImageFont
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -36,8 +38,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from telegram.constants import ParseMode
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+DATABASE_URL = os.getenv("DATABASE_URL", "")  # (مش مستخدم لسه - الداتا بتتحفظ في users.json)
 FORCE_SUB_CHANNEL = os.getenv("FORCE_SUB_CHANNEL", "")  # مثال: @NezelBotChannel من غير https
+COOKIES_FILE = os.getenv("COOKIES_FILE", "")  # اختياري: ملف cookies.txt ليوتيوب/انستا (بيحل مشكلة "confirm you're not a bot")
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "1159182662") or 0)
 except:
@@ -47,10 +50,29 @@ DATA_FILE = "users.json"
 BACKUP_FILE = "users_backup.json"
 URL_RE = re.compile(r'https?://[^\s<>"]+')
 MAX_TG_SIZE = 49 * 1024 * 1024
-DOWNLOAD_SEM = asyncio.Semaphore(2)
+TG_DL_LIMIT = 20 * 1024 * 1024  # حد تليجرام لتنزيل ملفات من المستخدمين للبوت
+UP = {"read_timeout": 180, "write_timeout": 180}  # مهلة رفع الملفات الكبيرة
 CANCEL_FLAGS = {}
-USER_LAST_DL = {}
-ACTIVE_MSGS = {}
+TREND_URLS = {}
+MODE_LABELS = {"audio": "MP3", "video": "فيديو", "nowm": "بدون علامة", "playlist": "قايمة"}
+
+_DOWNLOAD_SEM = None
+def get_sem():
+    # بيتعمل وقت الاستخدام عشان يتربط بالـ event loop الصح
+    global _DOWNLOAD_SEM
+    if _DOWNLOAD_SEM is None:
+        _DOWNLOAD_SEM = asyncio.Semaphore(2)
+    return _DOWNLOAD_SEM
+
+async def arun(cmd, timeout=120):
+    """تشغيل أمر (ffmpeg مثلا) من غير ما نوقف البوت كله"""
+    def _run():
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=timeout)
+        except Exception as e:
+            print("cmd err:", e)
+            return None
+    return await asyncio.to_thread(_run)
 
 def extract_url(text):
     m = URL_RE.search(text or "")
@@ -111,6 +133,7 @@ DEFAULT_USER = {
     "meme_mode": False, "meme_photo": None, "merge_videos": [], "trim_mode": False, "trim_video": None,
     "cover_mode": False, "caption_mode": False, "follow_mode": False, "pdf2img_mode": False,
     "cut_mode": False, "story_convert_mode": False, "remove_music_mode": False, "lyrics_mode": False,
+    "quiz_date": "",
 }
 
 def normalize_list(lst):
@@ -125,7 +148,8 @@ def normalize_list(lst):
 def get_user(uid):
     uid = str(uid)
     if uid not in DATA["users"] or not isinstance(DATA["users"][uid], dict):
-        DATA["users"][uid] = dict(DEFAULT_USER)
+        # deepcopy: عشان القوايم (invited_users, pdf_photos...) متتشاركش بين كل اليوزرز
+        DATA["users"][uid] = copy.deepcopy(DEFAULT_USER)
         save_data()
     u = DATA["users"][uid]
     for k, v in DEFAULT_USER.items():
@@ -172,7 +196,7 @@ def cleanup_tmp():
         now = time.time()
         for f in glob.glob("/tmp/*"):
             try:
-                if now - os.path.getmtime(f) > 3600:
+                if os.path.isfile(f) and now - os.path.getmtime(f) > 3600:
                     os.remove(f)
             except: pass
     except: pass
@@ -213,28 +237,63 @@ def summarize_text(text):
     return ". ".join(picked) + "."
 
 # ===== NEW HELPERS =====
+def clean_title(t):
+    t = re.sub(r'[\(\[\{].*?[\)\]\}]', ' ', t or "")
+    t = re.sub(r'(?i)\b(official|video|audio|lyrics|lyric|clip|hd|4k|mv)\b', ' ', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
 def get_lyrics(title):
     try:
-        r = requests.get("https://lrclib.net/api/search", params={"track_name": title}, timeout=15)
+        q = clean_title(title) or title
+        r = requests.get("https://lrclib.net/api/search", params={"q": q}, timeout=15)
         if r.status_code == 200 and r.json():
             item = r.json()[0]
             return item.get("plainLyrics") or item.get("syncedLyrics") or ""
     except Exception as e: print("lyrics err", e)
     return ""
 
+def get_title(url):
+    """بيجيب اسم الاغنية/الفيديو من اللينك (عشان نبحث عن الكلمات)"""
+    try:
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True, "socket_timeout": 30}
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE): opts["cookiefile"] = COOKIES_FILE
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+        t = info.get("track"); a = info.get("artist")
+        if t: return f"{a} {t}" if a else t
+        return info.get("title", "") or ""
+    except Exception as e:
+        print("title err", e); return ""
+
 def make_meme(image_path, top_text, out_path):
     try:
         img = Image.open(image_path).convert("RGB")
         w, h = img.size
         draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", int(w*0.08))
-        except:
-            font = ImageFont.load_default()
-        # خلفية سوداء فوق وتحت
-        draw.rectangle([0,0,w,int(h*0.15)], fill=(0,0,0))
-        draw.rectangle([0,h-int(h*0.15),w,h], fill=(0,0,0))
-        draw.text((w//2, int(h*0.07)), top_text[:40], font=font, fill="white", anchor="mm")
+        txt = (top_text or "")[:80]
+        try:  # عشان العربي يتكتب صح (اختياري: pip install arabic-reshaper python-bidi)
+            import arabic_reshaper
+            from bidi.algorithm import get_display
+            txt = get_display(arabic_reshaper.reshape(txt))
+        except Exception:
+            pass
+        bar = int(h * 0.15)
+        size = max(14, min(int(w * 0.08), int(bar * 0.7)))
+        font = None
+        while size >= 14:
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
+            except Exception:
+                font = None
+                break
+            if draw.textlength(txt, font=font) <= w * 0.94: break
+            size -= 2
+        draw.rectangle([0, 0, w, bar], fill=(0, 0, 0))
+        draw.rectangle([0, h - bar, w, h], fill=(0, 0, 0))
+        if font is None:
+            draw.text((10, max(0, bar // 4)), txt, fill="white")
+        else:
+            draw.text((w // 2, bar // 2), txt, font=font, fill="white", anchor="mm")
         img.save(out_path)
         return True
     except Exception as e:
@@ -253,6 +312,12 @@ QUIZ_LIST = [
     ("مين غنى اغنية انت عمري؟", "ام كلثوم"),
     ("كام يوم في السنة؟", "365"),
 ]
+
+def norm_ar(s):
+    s = (s or "").strip().lower()
+    for a, b in (("أ", "ا"), ("إ", "ا"), ("آ", "ا"), ("ة", "ه"), ("ى", "ي")):
+        s = s.replace(a, b)
+    return s
 
 def get_today_quiz():
     today = str(date.today())
@@ -380,7 +445,8 @@ def show_main_menu_text(uid, name):
         vip_line = f"👑 {T(uid, 'vip_left')} {max(1, days)} {T(uid, 'vip_days')}"
     else:
         vip_line = f"👑 {T(uid, 'not_vip')}"
-    return "\n".join([f"✨ {T(uid, 'welcome')} {name} 👑", "", T(uid, 'welcome_sub'), "────────────────", f"🎁 {T(uid, 'points')}: {points} / 100", f"👥 {T(uid, 'invites')}: {invites} / 50", vip_line, f"🎬 الجودة الحالية: {u.get('quality','720')}", "────────────────", f"👇 {T(uid, 'send_link')} - ممكن تبعت اكتر من لينك مرة واحدة"])
+    mode_label = MODE_LABELS.get(u.get("download_mode", "video"), "فيديو")
+    return "\n".join([f"✨ {T(uid, 'welcome')} {name} 👑", "", T(uid, 'welcome_sub'), "────────────────", f"🎁 {T(uid, 'points')}: {points} / 100", f"👥 {T(uid, 'invites')}: {invites} / 50", vip_line, f"🎬 الجودة الحالية: {u.get('quality','720')} | الوضع: {mode_label}", "────────────────", f"👇 {T(uid, 'send_link')} - ممكن تبعت اكتر من لينك مرة واحدة"])
 
 def compress_video_file(in_path, out_path, crf=28):
     if not shutil.which("ffmpeg"): return False, "ffmpeg not found"
@@ -401,7 +467,7 @@ def convert_to_story(in_path, out_path):
     except: return False
 
 def cut_best_part(in_path, out_path):
-    # بيقص من 0 لـ 30 ثانية - احلى حتة غالبا في الاول
+    # بيقص من 0 لـ 30 ثانية (أول 30 ثانية)
     if not shutil.which("ffmpeg"): return False
     cmd = ["ffmpeg","-y","-i",in_path,"-ss","0","-t","30","-c","copy",out_path]
     try:
@@ -409,13 +475,17 @@ def cut_best_part(in_path, out_path):
         return r.returncode==0 and os.path.exists(out_path)
     except: return False
 
-async def ensure_size_ok(path, uid):
+def _ensure_size_ok_sync(path):
     try:
         if not path or not os.path.exists(path): return None
         if os.path.getsize(path) <= MAX_TG_SIZE: return path
-        if not path.endswith(".mp4"): return None
+        stem, ext = os.path.splitext(path)
+        if ext.lower() not in (".mp4", ".mkv", ".webm", ".mov"):
+            try: os.remove(path)
+            except: pass
+            return None
         for crf in [30, 34, 38]:
-            out = path.replace(".mp4", f"_c{crf}.mp4")
+            out = f"{stem}_c{crf}.mp4"
             ok, _ = compress_video_file(path, out, crf=crf)
             if ok and os.path.getsize(out) <= MAX_TG_SIZE:
                 try: os.remove(path)
@@ -424,8 +494,14 @@ async def ensure_size_ok(path, uid):
             try:
                 if os.path.exists(out): os.remove(out)
             except: pass
+        try: os.remove(path)
+        except: pass
         return None
-    except: return None
+    except Exception:
+        return None
+
+async def ensure_size_ok(path, uid):
+    return await asyncio.to_thread(_ensure_size_ok_sync, path)
 
 def save_history(u, url, title=""):
     url = (url or "").strip()
@@ -466,11 +542,21 @@ def search_movies(query):
     return results
 
 def get_wallpapers(query="nature"):
+    """بيترجم الكلمة للانجليزي ويدور بيها، ولو فشل بيرجع لصور عشوائية"""
+    urls = []
     try:
-        r = requests.get("https://picsum.photos/v2/list", params={"page": 1, "limit": 5}, timeout=15)
-        if r.status_code == 200: return [f"https://picsum.photos/id/{x['id']}/1080/1920" for x in r.json()]
+        kw = translate_text(query or "", "en")
+        kw = re.sub(r'[^a-zA-Z0-9]+', ',', kw).strip(",") or "nature"
+        kw = ",".join(kw.split(",")[:3])
+        urls += [f"https://loremflickr.com/1080/1920/{kw}?lock={random.randint(1, 99999)}" for _ in range(3)]
+    except Exception as e: print(f"wallpaper kw err: {e}")
+    try:
+        r = requests.get("https://picsum.photos/v2/list", params={"page": random.randint(1, 20), "limit": 5}, timeout=15)
+        if r.status_code == 200: urls += [f"https://picsum.photos/id/{x['id']}/1080/1920" for x in r.json()]
     except Exception as e: print(f"wallpaper err: {e}")
-    return ["https://picsum.photos/1080/1920", "https://picsum.photos/1080/1920?random=1", "https://picsum.photos/1080/1920?random=2"]
+    if not urls:
+        urls = ["https://picsum.photos/1080/1920", "https://picsum.photos/1080/1920?random=1", "https://picsum.photos/1080/1920?random=2"]
+    return urls
 
 def get_trending():
     # ترند: tikwm + fallback يوتيوب ترند
@@ -488,13 +574,14 @@ def get_trending():
     except Exception as e: print(f"trend err: {e}")
     # fallback: بحث ترند يوتيوب
     try:
-        res2 = do_search("trending egypt 2026")
+        res2 = do_search("trending egypt " + str(date.today().year))
         return [{"id": r["id"], "title": r["title"], "author": "youtube", "url": f"https://www.youtube.com/watch?v={r['id']}"} for r in res2[:5]]
     except: return []
 
 def do_search(query):
     try:
         opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "skip_download": True, "socket_timeout": 30}
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE): opts["cookiefile"] = COOKIES_FILE
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(f"ytsearch5:{query}", download=False)
             entries = info.get("entries", []) if info else []
@@ -511,7 +598,7 @@ def format_for_quality(quality="720", want_audio=False):
     if want_audio: return "bestaudio/best"
     q = str(quality).lower()
     h = {"720": 720, "1080": 1080, "2k": 1440, "4k": 2160}.get(q, 720)
-    return f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best"
+    return (f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best")
 
 def get_tiktok_id_from_url(url):
     try:
@@ -555,37 +642,41 @@ def download_tiktok_via_api(url, base, want_audio=False):
         print("tikwm err: " + str(e))
         return [], None
 
-def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=None):
+def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=None, cancel_check=None):
     plat = platform_of(url)
     if plat == "tiktok":
         files, thumb = download_tiktok_via_api(url, base, want_audio=want_audio)
         if files: return files, thumb
         print("tikwm failed, fallback to yt-dlp")
-    # تليجرام: لو لينك t.me - نحاول yt-dlp برضه
     try:
         for f in glob.glob(base + ".*"):
             try: os.remove(f)
             except: pass
         fmt = format_for_quality(quality, want_audio)
         def hook(d):
+            if cancel_check and cancel_check():
+                raise Exception("cancelled")
             if progress_cb and d.get("status") == "downloading":
                 try:
                     total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                     dl = d.get("downloaded_bytes", 0)
                     if total > 0: progress_cb(int(dl * 100 / total))
-                except: pass
+                except Exception: pass
         opts = {
             "format": fmt, "outtmpl": base + ".%(ext)s",
             "quiet": True, "no_warnings": True, "nocheckcertificate": True,
             "socket_timeout": 90, "retries": 3, "noplaylist": True,
-            "progress_hooks": [hook] if progress_cb else [],
-            # شلت impersonate عشان كان بيبوظ على Railway
-            "extractor_args": {"youtube": {"player_client": [["android", "ios", "web"]]}},
+            "progress_hooks": [hook],
             "http_headers": {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
             }
         }
+        # (اتشال extractor_args القديم: كان قايمة جوا قايمة وده غلط ومكن يبوظ يوتيوب خالص)
+        if not want_audio:
+            opts["merge_output_format"] = "mp4"  # عشان الملف يطلع mp4 دايما
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+            opts["cookiefile"] = COOKIES_FILE
         if want_audio:
             opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -597,6 +688,8 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=
         return files, thumb
     except Exception as e:
         print("download failed: " + str(e))
+        if cancel_check and cancel_check():
+            return [], None
         if plat == "tiktok":
             return download_tiktok_via_api(url, base, want_audio=want_audio)
         return [], None
@@ -604,6 +697,7 @@ def download_with_ytdlp(url, base, want_audio=False, quality="720", progress_cb=
 def download_playlist(url, uid, quality="720"):
     try:
         opts = {"quiet": True, "extract_flat": True, "skip_download": True, "socket_timeout": 30}
+        if COOKIES_FILE and os.path.exists(COOKIES_FILE): opts["cookiefile"] = COOKIES_FILE
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
             entries = info.get("entries", []) if info else []
@@ -619,37 +713,51 @@ def download_playlist(url, uid, quality="720"):
         print(f"playlist err: {e}")
         return []
 
-async def send_downloaded(msg_obj, files, want_audio, kb, thumb_url=None):
+def _fetch_thumb(thumb_url):
     try:
-        thumb_path = None
-        if thumb_url:
-            try:
-                r = requests.get(thumb_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-                if r.status_code == 200 and len(r.content) > 1000:
-                    thumb_path = f"/tmp/thumb_{int(time.time()*1000)}.jpg"
-                    with open(thumb_path, "wb") as f: f.write(r.content)
-            except: pass
+        if not thumb_url: return None
+        r = requests.get(thumb_url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        # تليجرام بيقبل صورة مصغرة اقل من 200 كيلو
+        if r.status_code == 200 and 1000 < len(r.content) < 200 * 1024:
+            p = f"/tmp/thumb_{int(time.time()*1000)}.jpg"
+            with open(p, "wb") as f: f.write(r.content)
+            return p
+    except Exception: pass
+    return None
+
+async def send_downloaded(msg_obj, files, want_audio, kb, thumb_url=None):
+    thumb_path = await asyncio.to_thread(_fetch_thumb, thumb_url)
+    ok = True
+    try:
         for fp in files:
-            if fp.endswith((".jpg", ".jpeg", ".png", ".webp")):
-                with open(fp, "rb") as f: await msg_obj.reply_photo(f)
-            else:
-                with open(fp, "rb") as f:
-                    if want_audio: await msg_obj.reply_audio(f, reply_markup=kb)
-                    else:
-                        try: await msg_obj.reply_video(f, reply_markup=kb, thumbnail=thumb_path)
-                        except: await msg_obj.reply_video(f, reply_markup=kb)
+            try:
+                if fp.endswith((".jpg", ".jpeg", ".png", ".webp")):
+                    with open(fp, "rb") as f: await msg_obj.reply_photo(f, **UP)
+                elif want_audio or fp.endswith((".mp3", ".m4a", ".opus")):
+                    with open(fp, "rb") as f: await msg_obj.reply_audio(f, reply_markup=kb, **UP)
+                else:
+                    with open(fp, "rb") as f:
+                        try:
+                            await msg_obj.reply_video(f, reply_markup=kb, thumbnail=(Path(thumb_path) if thumb_path else None), supports_streaming=True, **UP)
+                        except Exception as e1:
+                            print(f"video send err: {e1}")
+                            f.seek(0)  # لازم نرجع اول الملف قبل ما نبعته تاني
+                            await msg_obj.reply_document(f, reply_markup=kb, **UP)
+            except Exception as e:
+                print(f"send err: {e}")
+                ok = False
+    finally:
+        for fp in files:
             try: os.remove(fp)
             except: pass
         if thumb_path:
             try: os.remove(thumb_path)
             except: pass
-        return True
-    except Exception as e:
-        print(f"send err: {e}")
-        return False
+    return ok
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    is_new = str(uid) not in DATA["users"]  # لازم قبل أي get_user
     if is_banned(uid):
         await update.message.reply_text(T(uid, "banned_msg")); return
     u = get_user(uid)
@@ -659,7 +767,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(T(uid, "force_sub"), reply_markup=kb); return
     if context.args and context.args[0].startswith("inv_"):
         inviter = context.args[0].replace("inv_", "")
-        if inviter != str(uid) and not u.get("invited_by") and inviter.isdigit():
+        # الدعوة بتتحسب بس لو اليوزر جديد فعلا
+        if is_new and inviter != str(uid) and not u.get("invited_by") and inviter.isdigit():
             u["invited_by"] = inviter
             inv = get_user(int(inviter))
             if str(uid) not in inv.get("invited_users", []):
@@ -676,7 +785,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    await update.message.reply_text("📖 أوامر البوت:\n\n/start - القايمة الرئيسية\n/help - المساعدة\n/stats - إحصائياتك\n/vip 123 - تفعيل VIP (أدمن)\n/reply 123 رسالة - رد على دعم (أدمن)\n/broadcast رسالة - رسالة للكل (أدمن)\n/ban 123 - حظر (أدمن)\n/unban 123 - فك حظر (أدمن)\n\nابعت لينك من تيك توك / انستا / فيس / يوتيوب / Pinterest / Reddit / Twitch / SoundCloud وهيتحمل على طول\nممكن تبعت اكتر من لينك مرة واحدة")
+    await update.message.reply_text("📖 أوامر البوت:\n\n/start - القايمة الرئيسية\n/help - المساعدة\n/stats - إحصائيات البوت\n/vip 123 - تفعيل VIP (أدمن)\n/reply 123 رسالة - رد على دعم (أدمن)\n/broadcast رسالة - رسالة للكل (أدمن)\n/ban 123 - حظر (أدمن)\n/unban 123 - فك حظر (أدمن)\n\nابعت لينك من تيك توك / انستا / فيس / يوتيوب / Pinterest / Reddit / Twitch / SoundCloud وهيتحمل على طول\nممكن تبعت اكتر من لينك مرة واحدة")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -690,8 +799,9 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def vip_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    # كان "and" وده بيخلي اي حد يفعل VIP لو ADMIN_ID = 0
+    if uid != ADMIN_ID or ADMIN_ID == 0: await update.message.reply_text("Not allowed"); return
     if not context.args: await update.message.reply_text("Use: /vip 123456"); return
-    if uid != ADMIN_ID and ADMIN_ID != 0: await update.message.reply_text("Not allowed"); return
     try:
         target = str(context.args[0]).strip()
         if not target.isdigit(): await update.message.reply_text("ID must be numbers"); return
@@ -717,7 +827,8 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid != ADMIN_ID or ADMIN_ID == 0: return
     if not context.args: await update.message.reply_text("Use: /broadcast your message"); return
-    msg = " ".join(context.args)
+    parts = (update.message.text or "").split(None, 1)  # عشان السطور الجديدة متضيعش
+    msg = parts[1] if len(parts) > 1 else ""
     sent = 0; failed = 0
     await update.message.reply_text(f"📣 ببعت لـ {len(DATA['users'])} واحد...")
     for tid in list(DATA["users"].keys()):
@@ -778,26 +889,28 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         qq = data.replace("set_q_", "").lower(); u["quality"] = qq; save_data()
         await q.message.reply_text(f"✅ {T(uid, 'quality_set')} {qq}\n\nابعت لينك دلوقتي وهيتحمل بالجودة دي"); return
     # NEW MODES
-    if data == "mode_cut": reset_modes(u); u["cut_mode"]=True; u["state"]="cut"; save_data(); await q.message.reply_text("✂️ ابعت فيديو من موبايلك وهقصلك احلى 30 ثانية"); return
-    if data == "mode_story_convert": reset_modes(u); u["story_convert_mode"]=True; u["state"]="story_convert"; save_data(); await q.message.reply_text("📱 ابعت فيديو وهحوله لمقاس ستوري 1080x1920"); return
+    if data == "mode_cut": reset_modes(u); u["cut_mode"]=True; u["state"]="cut"; save_data(); await q.message.reply_text("✂️ ابعت فيديو من موبايلك (لحد 20 ميجا) وهقصلك أول 30 ثانية منه"); return
+    if data == "mode_story_convert": reset_modes(u); u["story_convert_mode"]=True; u["state"]="story_convert"; save_data(); await q.message.reply_text("📱 ابعت فيديو (لحد 20 ميجا) وهحوله لمقاس ستوري 1080x1920"); return
     if data == "mode_meme": reset_modes(u); u["meme_mode"]=True; u["state"]="meme_photo"; save_data(); await q.message.reply_text("😂 ابعت صورة وبعدها اكتب النص اللي عايزه على الميم"); return
     if data == "mode_follow": reset_modes(u); u["follow_mode"]=True; u["state"]="follow"; save_data(); await q.message.reply_text("🔔 اكتب يوزر التيك توك من غير @ - مثال: ahmed123"); return
     if data == "mode_voice": reset_modes(u); u["state"]="voice"; save_data(); await q.message.reply_text("🎤 ابعت فويس بالنص اللي عايز تدور عليه"); return
     if data == "mode_quiz":
+        if u.get("quiz_date") == str(date.today()):
+            await q.message.reply_text("🎁 جاوبت على مسابقة النهاردة، تعالى بكرة"); return
         qq, aa = get_today_quiz(); u["state"]="quiz"; save_data(); await q.message.reply_text(f"🎁 مسابقة اليوم:\n\n{qq}\n\nاكتب اجابتك"); return
     if data == "mode_leader":
         users_sorted = sorted(DATA["users"].items(), key=lambda x: int(x[1].get("invites",0)) if isinstance(x[1], dict) else 0, reverse=True)[:10]
         txt = "🏆 لوحة الشرف - اكتر ناس دعوا صحابهم:\n\n"
         for i,(tid,uu) in enumerate(users_sorted,1):
-            txt += f"{i}. ID {tid} - {uu.get('invites',0)} دعوة - {uu.get('points',0)} نقطة\n"
+            txt += f"{i}. ID ***{str(tid)[-4:]} - {uu.get('invites',0)} دعوة - {uu.get('points',0)} نقطة\n"
         await q.message.reply_text(txt); return
-    if data == "mode_cover": reset_modes(u); u["cover_mode"]=True; u["state"]="cover"; save_data(); await q.message.reply_text("🖼️ ابعت فيديو وهعملك غلاف ليه"); return
+    if data == "mode_cover": reset_modes(u); u["cover_mode"]=True; u["state"]="cover"; save_data(); await q.message.reply_text("🖼️ ابعت فيديو (لحد 20 ميجا) وهعملك غلاف ليه"); return
     if data == "mode_caption": reset_modes(u); u["caption_mode"]=True; u["state"]="caption"; save_data(); await q.message.reply_text("✍️ ابعت لينك الفيديو او اكتب عنوانه وهعملك كابشن وهاشتاجات"); return
-    if data == "mode_nomusic": reset_modes(u); u["remove_music_mode"]=True; u["state"]="nomusic"; save_data(); await q.message.reply_text("🎼 ابعت فيديو وهشيل الموسيقى واسيب صوت الناس"); return
-    if data == "mode_merge": reset_modes(u); u["state"]="merge"; u["merge_videos"]=[]; save_data(); await q.message.reply_text("🔗 ابعت اول فيديو وبعدين التاني"); return
+    if data == "mode_nomusic": reset_modes(u); u["remove_music_mode"]=True; u["state"]="nomusic"; save_data(); await q.message.reply_text("🎼 ابعت فيديو (لحد 20 ميجا) وهقلل الترددات العالية بتاعة الموسيقى (مش فصل كامل)"); return
+    if data == "mode_merge": reset_modes(u); u["state"]="merge"; u["merge_videos"]=[]; save_data(); await q.message.reply_text("🔗 ابعت اول فيديو وبعدين التاني (كل واحد لحد 20 ميجا)"); return
     if data == "mode_trim": reset_modes(u); u["trim_mode"]=True; u["state"]="trim_video"; save_data(); await q.message.reply_text("✂️ ابعت الفيديو وبعدين اكتب الوقت - مثال: من 0:10 لـ 0:30"); return
-    if data == "mode_pdf2img": reset_modes(u); u["pdf2img_mode"]=True; u["state"]="pdf2img"; save_data(); await q.message.reply_text("📄 ابعت ملف PDF وهحوله لصور"); return
-    if data == "mode_lyrics": reset_modes(u); u["lyrics_mode"]=True; u["state"]="lyrics"; save_data(); await q.message.reply_text("🎤 ابعت لينك الاغنية وهجيب الصوت + كلماتها"); return
+    if data == "mode_pdf2img": reset_modes(u); u["pdf2img_mode"]=True; u["state"]="pdf2img"; save_data(); await q.message.reply_text("📄 ابعت ملف PDF وهحوله لصور (أول 3 صفحات)"); return
+    if data == "mode_lyrics": reset_modes(u); u["lyrics_mode"]=True; u["state"]="lyrics"; save_data(); await q.message.reply_text("🎤 ابعت لينك الاغنية او اسمها وهجيب الصوت + كلماتها"); return
     if data == "mode_mp3": reset_modes(u); u["download_mode"] = "audio"; save_data(); await q.message.reply_text("🎵 تمام، ابعت اللينك وهحوله MP3 على طول"); return
     if data == "mode_video": reset_modes(u); u["download_mode"] = "video"; save_data(); await q.message.reply_text(f"📥 تمام، اختار الجودة:", reply_markup=quality_keyboard(uid)); return
     if data == "mode_nowm": reset_modes(u); u["download_mode"] = "nowm"; save_data(); await q.message.reply_text("✨ تمام، ابعت لينك تيك توك وهجيبهولك من غير علامة مائية"); return
@@ -805,14 +918,21 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "mode_story": reset_modes(u); u["story_mode"] = True; u["state"] = "story"; save_data(); await q.message.reply_text("📸 ابعت لينك الستوري من انستا على طول"); return
     if data == "mode_explore":
         await q.message.reply_text("🔥 بدور على الترند...")
-        trends = get_trending()
+        trends = await asyncio.to_thread(get_trending)
         if not trends: await q.message.reply_text(T(uid, "not_found")); return
-        btns = [[InlineKeyboardButton(f"🎵 {t['title'][:35]}", callback_data=f"pick_tiktok_{t['id']}")] for t in trends]
+        btns = []
+        for t in trends:
+            if t["author"] == "youtube":
+                cb_data = f"pick_{t['id']}"  # نتيجة يوتيوب مش تيك توك
+            else:
+                TREND_URLS[t["id"]] = t["url"]
+                cb_data = f"pick_tiktok_{t['id']}"
+            btns.append([InlineKeyboardButton(f"🎵 {t['title'][:35]}", callback_data=cb_data)])
         btns.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
-        await q.message.reply_text("🔥 ترند تيك توك دلوقتي:", reply_markup=InlineKeyboardMarkup(btns)); return
-    if data == "mode_gif": reset_modes(u); u["gif_mode"] = True; save_data(); await q.message.reply_text("🎞️ ابعت فيديو من موبايلك وهحوله GIF"); return
-    if data == "mode_compress": reset_modes(u); u["compress_mode"] = True; save_data(); await q.message.reply_text("🗜️ ابعت فيديو من موبايلك وهضغطهولك"); return
-    if data == "mode_extract": reset_modes(u); u["state"] = "extract"; save_data(); await q.message.reply_text("🎧 ابعت فيديو من موبايلك وهطلعلك الصوت بتاعه MP3"); return
+        await q.message.reply_text("🔥 ترند دلوقتي:", reply_markup=InlineKeyboardMarkup(btns)); return
+    if data == "mode_gif": reset_modes(u); u["gif_mode"] = True; save_data(); await q.message.reply_text("🎞️ ابعت فيديو من موبايلك (لحد 20 ميجا) وهحوله GIF"); return
+    if data == "mode_compress": reset_modes(u); u["compress_mode"] = True; save_data(); await q.message.reply_text("🗜️ ابعت فيديو من موبايلك (لحد 20 ميجا) وهضغطهولك"); return
+    if data == "mode_extract": reset_modes(u); u["state"] = "extract"; save_data(); await q.message.reply_text("🎧 ابعت فيديو من موبايلك (لحد 20 ميجا) وهطلعلك الصوت بتاعه MP3"); return
     if data == "mode_movies": reset_modes(u); u["movie_mode"] = True; u["state"] = "movies"; save_data(); await q.message.reply_text("🎬 اكتب اسم الفيلم او المسلسل"); return
     if data == "mode_wallpaper": reset_modes(u); u["wallpaper_mode"] = True; u["state"] = "wallpaper"; save_data(); await q.message.reply_text("🖼️ اكتب نوع الخلفية: طبيعة، سيارات، انمي..."); return
     if data == "search": reset_modes(u); u["state"] = "search"; save_data(); await q.message.reply_text(f"🔍 {T(uid, 'search_prompt')}"); return
@@ -835,7 +955,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not images: await q.message.reply_text(T(uid, "download_failed")); return
             pdf_path = f"/tmp/{uid}_{int(time.time()*1000)}.pdf"
             images[0].save(pdf_path, save_all=True, append_images=images[1:])
-            with open(pdf_path, "rb") as f: await q.message.reply_document(f, filename="Nezel.pdf", caption=T(uid, "pdf_done"))
+            with open(pdf_path, "rb") as f: await q.message.reply_document(f, filename="Nezel.pdf", caption=T(uid, "pdf_done"), **UP)
             try: os.remove(pdf_path)
             except: pass
             u["pdf_photos"] = []; u["pdf_mode"] = False; save_data()
@@ -866,11 +986,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             idx = int(data.replace("hist_", "")); hist = normalize_list(u.get("history", []))
             if idx < 0 or idx >= len(hist): await q.message.reply_text(T(uid, "download_failed")); return
-            url = hist[idx]["url"]; await q.message.reply_text(T(uid, "downloading"))
-            base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-            files, thumb = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality", "720"))
-            if files: await send_downloaded(q.message, files, False, None, thumb)
-            else: await q.message.reply_text(T(uid, "download_failed"))
+            url = hist[idx]["url"]
+            await do_download_flow(q.message, uid, url, quality=u.get("quality", "720"))
         except: await q.message.reply_text(T(uid, "download_failed"))
         return
     if data == "fav_info":
@@ -884,11 +1001,8 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             idx = int(data.replace("favdl_", "")); favs = normalize_list(u.get("favs", []))
             if idx < 0 or idx >= len(favs): await q.message.reply_text(T(uid, "download_failed")); return
-            url = favs[idx]["url"]; await q.message.reply_text(T(uid, "downloading"))
-            base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-            files, thumb = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality", "720"))
-            if files: await send_downloaded(q.message, files, False, None, thumb)
-            else: await q.message.reply_text(T(uid, "download_failed"))
+            url = favs[idx]["url"]
+            await do_download_flow(q.message, uid, url, quality=u.get("quality", "720"))
         except: await q.message.reply_text(T(uid, "download_failed"))
         return
     if data.startswith("favadd_"):
@@ -918,10 +1032,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = u.get("last_link", "")
         if not url: await q.message.reply_text(T(uid, "no_link_mp3")); return
         await q.message.reply_text(T(uid, "converting_mp3"))
-        base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000)) + "_mp3"
-        files, _ = download_with_ytdlp(url, base, want_audio=True, quality=u.get("quality", "720"))
-        if not files: await q.message.reply_text(T(uid, "download_failed")); return
-        await send_downloaded(q.message, files, True, None); return
+        await do_download_flow(q.message, uid, url, want_audio=True, quality=u.get("quality", "720")); return
 
 async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -930,77 +1041,78 @@ async def handle_dl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = q.from_user.id
     if is_banned(uid): await q.message.reply_text(T(uid, "banned_msg")); return
     u = get_user(uid); data = q.data or ""
-    if data.startswith("dl_tiktok_"):
-        vid = data.replace("dl_tiktok_", ""); await q.message.reply_text(T(uid, "downloading"))
-        url = f"https://www.tiktok.com/@tiktok/video/{vid}"
-        base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-        files, thumb = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality", "720"))
-        if not files: await q.message.reply_text(T(uid, "download_failed")); return
-        await send_downloaded(q.message, files, False, None, thumb); return
-    want_audio = False; quality = u.get("quality", "720"); vid = ""
-    if data.startswith("dl_audio_"): vid = data.replace("dl_audio_", ""); want_audio = True
-    elif data.startswith("dl_1080_"): vid = data.replace("dl_1080_", ""); quality = "1080"
-    elif data.startswith("dl_720_"): vid = data.replace("dl_720_", ""); quality = "720"
-    elif data.startswith("dl_2k_"): vid = data.replace("dl_2k_", ""); quality = "2k"
-    elif data.startswith("dl_4k_"): vid = data.replace("dl_4k_", ""); quality = "4k"
-    elif data.startswith("dl_video_"): vid = data.replace("dl_video_", ""); quality = u.get("quality", "720")
-    else: return
-    u["quality"] = quality; save_data()
-    await q.message.reply_text(T(uid, "downloading"))
-    try:
-        base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-        files, thumb = download_with_ytdlp("https://www.youtube.com/watch?v=" + vid, base, want_audio=want_audio, quality=quality)
-        if not files: await q.message.reply_text(T(uid, "download_failed")); return
-        await send_downloaded(q.message, files, want_audio, None, thumb)
-    except Exception as e: await q.message.reply_text(f"{T(uid, 'download_failed')}\n{str(e)}")
+    want_audio = False; quality = u.get("quality", "720"); url = ""
+    if data.startswith("dl_tiktok_") or data.startswith("dl_ttaudio_"):
+        want_audio = data.startswith("dl_ttaudio_")
+        vid = data.split("_", 2)[2]
+        url = TREND_URLS.get(vid) or f"https://www.tiktok.com/@tiktok/video/{vid}"
+    else:
+        vid = ""
+        for pre, qual, aud in (("dl_audio_", None, True), ("dl_1080_", "1080", False), ("dl_720_", "720", False), ("dl_2k_", "2k", False), ("dl_4k_", "4k", False), ("dl_video_", None, False)):
+            if data.startswith(pre):
+                vid = data[len(pre):]; want_audio = aud
+                if qual: quality = qual; u["quality"] = qual; save_data()
+                break
+        if not vid: return
+        url = "https://www.youtube.com/watch?v=" + vid
+    # بنستخدم نفس مسار التحميل (حجم + إلغاء + احصائيات + رسايل خطأ)
+    await do_download_flow(q.message, uid, url, want_audio=want_audio, quality=quality)
 
 async def handle_choose_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer(); uid = q.from_user.id; data = q.data or ""
     if data.startswith("pick_tiktok_"):
         vid = data.replace("pick_tiktok_", "")
-        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data=f"dl_audio_{vid}")],[InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 720", callback_data=f"dl_tiktok_{vid}")],[InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")]])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data=f"dl_ttaudio_{vid}")],[InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 720", callback_data=f"dl_tiktok_{vid}")],[InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")]])
         await q.message.reply_text(f"{T(uid, 'choose_format')}", reply_markup=kb); return
     if not data.startswith("pick_"): return
     vid = data.replace("pick_", "")
     kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data=f"dl_audio_{vid}")],[InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 720", callback_data=f"dl_720_{vid}")],[InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 1080", callback_data=f"dl_1080_{vid}")],[InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 2K", callback_data=f"dl_2k_{vid}")],[InlineKeyboardButton(f"📥 {T(uid, 'download_video')} - 4K", callback_data=f"dl_4k_{vid}")],[InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")]])
     await q.message.reply_text(f"{T(uid, 'choose_format')}", reply_markup=kb)
 
-async def do_download_flow(message, uid, url, want_audio=False, quality="720", is_playlist=False):
+async def do_download_flow(message, uid, url, want_audio=False, quality="720", is_playlist=False, check_rate=True):
     u = get_user(uid)
     now = time.time()
-    if now - float(u.get("last_dl_at", 0)) < 3 and not is_vip(uid):
+    if check_rate and now - float(u.get("last_dl_at", 0)) < 3 and not is_vip(uid):
         await message.reply_text(T(uid, "rate_limit")); return False
     u["last_dl_at"] = now; save_data()
-    CANCEL_FLAGS[str(uid)] = False
+    key = str(uid)
+    CANCEL_FLAGS[key] = False
     plat = platform_of(url)
-    status_msg = await message.reply_text(f"⏳ {T(uid, 'downloading')} 0%\n{T(uid, 'queue_wait')}", reply_markup=cancel_keyboard(uid))
+    loop = asyncio.get_running_loop()
+    sem = get_sem()
+    queued = sem.locked()
+    status_msg = await message.reply_text(f"⏳ {T(uid, 'downloading')} 0%" + (f"\n{T(uid, 'queue_wait')}" if queued else ""), reply_markup=cancel_keyboard(uid))
     last_pct = [0]
-    def cb(pct):
+    def cb(pct):  # بيتنادى من thread التحميل
         if pct - last_pct[0] >= 20:
             last_pct[0] = pct
-            try: asyncio.create_task(status_msg.edit_text(f"⏳ {T(uid, 'downloading')} {pct}%", reply_markup=cancel_keyboard(uid)))
-            except: pass
-    async with DOWNLOAD_SEM:
-        if CANCEL_FLAGS.get(str(uid)):
+            try: asyncio.run_coroutine_threadsafe(status_msg.edit_text(f"⏳ {T(uid, 'downloading')} {pct}%", reply_markup=cancel_keyboard(uid)), loop)
+            except Exception: pass
+    def cancelled():
+        return bool(CANCEL_FLAGS.get(key))
+    async with sem:
+        if cancelled():
             await status_msg.edit_text(T(uid, "cancelled")); return False
         if is_playlist:
-            urls = download_playlist(url, uid, quality)
+            urls = await asyncio.to_thread(download_playlist, url, uid, quality)
             if not urls: await status_msg.edit_text(T(uid, "download_failed")); return False
-            await status_msg.edit_text(f"📃 لقيت {len(urls)} فيديوهات، بحملهم...")
+            await status_msg.edit_text(f"📃 لقيت {len(urls)} فيديوهات، بحملهم...", reply_markup=cancel_keyboard(uid))
             for idx, pu in enumerate(urls):
-                if CANCEL_FLAGS.get(str(uid)): break
+                if cancelled(): break
                 base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000)) + f"_{idx}"
-                files, thumb = download_with_ytdlp(pu, base, want_audio=want_audio, quality=quality)
-                if files:
-                    for fp in files:
-                        fixed = await ensure_size_ok(fp, uid)
-                        if not fixed: await message.reply_text(T(uid, "too_big")); continue
-                        await send_downloaded(message, [fixed], want_audio, None, thumb)
-            await status_msg.edit_text("✅ خلصت القايمة")
+                files, thumb = await asyncio.to_thread(download_with_ytdlp, pu, base, want_audio, quality, None, cancelled)
+                fixed_files = []
+                for fp in files:
+                    fixed = await ensure_size_ok(fp, uid)
+                    if not fixed: await message.reply_text(T(uid, "too_big")); continue
+                    fixed_files.append(fixed)
+                if fixed_files:
+                    await send_downloaded(message, fixed_files, want_audio, None, thumb)
+            await status_msg.edit_text(T(uid, "cancelled") if cancelled() else "✅ خلصت القايمة")
             bump_stats(plat); return True
         base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-        files, thumb = download_with_ytdlp(url, base, want_audio=want_audio, quality=quality, progress_cb=cb)
-        if CANCEL_FLAGS.get(str(uid)):
+        files, thumb = await asyncio.to_thread(download_with_ytdlp, url, base, want_audio, quality, cb, cancelled)
+        if cancelled():
             for f in files:
                 try: os.remove(f)
                 except: pass
@@ -1021,39 +1133,48 @@ async def do_download_flow(message, uid, url, want_audio=False, quality="720", i
         try: await status_msg.delete()
         except: pass
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"🎵 {T(uid, 'download_mp3')}", callback_data="convert_mp3_last")],[InlineKeyboardButton("⭐ اضافة للمفضلة", callback_data="favadd_")]])
-        await send_downloaded(message, ok_files, want_audio, kb, thumb)
+        sent_ok = await send_downloaded(message, ok_files, want_audio, kb, thumb)
+        if not sent_ok:
+            await message.reply_text(T(uid, "download_failed"))
+            return False
         bump_stats(plat)
         cleanup_tmp()
         return True
 
+def transcribe_wav(wav):
+    try:
+        import whisper  # اختياري: pip install openai-whisper (تقيل)
+        m = whisper.load_model("tiny")
+        return (m.transcribe(wav).get("text", "") or "").strip()
+    except Exception as e:
+        print("whisper err:", e)
+        return ""
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.effective_user: return
     uid = update.effective_user.id
+    if is_banned(uid): return
     u = get_user(uid)
     if u.get("state") != "voice":
         return
-    # تحويل فويس لنص - بنستخدم whisper لو متوفر، ولو لا بنطلب كتابة
     await update.message.reply_text("🎤 سمعتك، بدور على اللي قولته...")
     try:
         vf = await context.bot.get_file(update.message.voice.file_id)
-        path = f"/tmp/{uid}_voice.ogg"
+        ts = int(time.time() * 1000)
+        path = f"/tmp/{uid}_{ts}_voice.ogg"
         await vf.download_to_drive(path)
-        # محاولة تحويل بـ ffmpeg لـ wav ثم whisper لو موجود
-        wav = path.replace(".ogg",".wav")
-        subprocess.run(["ffmpeg","-y","-i",path,wav], capture_output=True, timeout=30)
-        text = ""
-        try:
-            import whisper
-            m = whisper.load_model("tiny")
-            r = m.transcribe(wav)
-            text = r.get("text","").strip()
-        except:
-            text = ""
+        wav = path.replace(".ogg", ".wav")
+        await arun(["ffmpeg", "-y", "-i", path, wav], 30)
+        text = await asyncio.to_thread(transcribe_wav, wav)
+        for p in (path, wav):
+            try: os.remove(p)
+            except: pass
         if not text:
             await update.message.reply_text("🎤 مش عرفت اسمع كويس، اكتب الاسم كتابة وهادور عليه")
-            u["state"]="search"; save_data(); return
-        u["state"]="home"; save_data()
+            u["state"] = "search"; save_data(); return
+        u["state"] = "home"; save_data()
         await update.message.reply_text(f"🎤 سمعت: {text}\nبدور...")
-        results = do_search(text)
+        results = await asyncio.to_thread(do_search, text)
         if not results:
             await update.message.reply_text(T(uid, "not_found")); return
         buttons = [[InlineKeyboardButton(f"🎵 {r['title'][:35]}", callback_data=f"pick_{r['id']}")] for r in results]
@@ -1062,125 +1183,145 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"فشل الفويس: {e}")
 
+def _cleanup_glob(pattern):
+    for p in glob.glob(pattern):
+        try: os.remove(p)
+        except: pass
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # الرسايل المتعدلة / بوستات القنوات مفيهاش update.message
+    if not update.message or not update.effective_user: return
     uid = update.effective_user.id
     if is_banned(uid): await update.message.reply_text(T(uid, "banned_msg")); return
     u = get_user(uid); user = update.effective_user
-    # PDF ملف
-    if update.message.document and update.message.document.mime_type == "application/pdf" and u.get("state")=="pdf2img":
+
+    # ===== PDF -> صور =====
+    if update.message.document and update.message.document.mime_type == "application/pdf" and u.get("state") == "pdf2img":
         try:
             await update.message.reply_text("⏳ بحول PDF لصور...")
             f = await context.bot.get_file(update.message.document.file_id)
-            pdf_path = f"/tmp/{uid}_in.pdf"; await f.download_to_drive(pdf_path)
-            # تحويل بـ fitz لو موجود
+            pdf_path = f"/tmp/{uid}_{int(time.time()*1000)}_in.pdf"
+            await f.download_to_drive(pdf_path)
             try:
                 import fitz
-                doc = fitz.open(pdf_path)
-                for i, page in enumerate(doc[:3]):
-                    pix = page.get_pixmap(dpi=150)
-                    img_path = f"/tmp/{uid}_p{i}.png"; pix.save(img_path)
-                    with open(img_path,"rb") as ff: await update.message.reply_photo(ff, caption=f"📄 صفحة {i+1}")
-                    try: os.remove(img_path)
-                    except: pass
-            except:
-                await update.message.reply_text("⚠️ تحويل PDF مش متاح على السيرفر ده، نزل مكتبة PyMuPDF")
+            except ImportError:
+                await update.message.reply_text("⚠️ تحويل PDF مش متاح على السيرفر ده، ضيف PyMuPDF في requirements.txt")
+                reset_modes(u); save_data(); return
+            doc = fitz.open(pdf_path)
+            total = len(doc)
+            for i in range(min(3, total)):
+                pix = doc[i].get_pixmap(dpi=150)
+                img_path = f"/tmp/{uid}_{int(time.time()*1000)}_p{i}.png"
+                pix.save(img_path)
+                with open(img_path, "rb") as ff: await update.message.reply_photo(ff, caption=f"📄 صفحة {i+1} من {total}", **UP)
+                try: os.remove(img_path)
+                except: pass
+            doc.close()
+            try: os.remove(pdf_path)
+            except: pass
+            if total > 3: await update.message.reply_text("ℹ️ بعتلك أول 3 صفحات بس")
             reset_modes(u); save_data(); return
-        except Exception as e: await update.message.reply_text(f"فشل: {e}"); return
+        except Exception as e:
+            await update.message.reply_text(f"فشل: {e}"); return
+
+    # ===== ادوات الفيديو =====
     is_video_msg = bool(update.message.video or (update.message.document and update.message.document.mime_type and "video" in update.message.document.mime_type))
     if is_video_msg:
-        # دمج
-        if u.get("state")=="merge":
-            try:
-                file_id = update.message.video.file_id if update.message.video else update.message.document.file_id
-                f = await context.bot.get_file(file_id); ts=int(time.time()*1000); p=f"/tmp/{uid}_m{len(u.get('merge_videos',[]))}.mp4"; await f.download_to_drive(p)
-                u["merge_videos"].append(p); save_data()
-                if len(u["merge_videos"])>=2:
-                    await update.message.reply_text("⏳ بدمج الفيديوهين...")
-                    list_path=f"/tmp/{uid}_list.txt"
-                    with open(list_path,"w") as lf:
-                        for pp in u["merge_videos"]: lf.write(f"file '{pp}'\n")
-                    out=f"/tmp/{uid}_merged.mp4"
-                    subprocess.run(["ffmpeg","-y","-f","concat","-safe","0","-i",list_path,"-c","copy",out], capture_output=True, timeout=120)
-                    if os.path.exists(out):
-                        with open(out,"rb") as ff: await update.message.reply_video(ff, caption="🔗 تم الدمج")
-                        try: os.remove(out)
-                        except: pass
-                    for pp in u["merge_videos"]:
-                        try: os.remove(pp)
-                        except: pass
-                    u["merge_videos"]=[]; reset_modes(u); save_data()
-                else:
-                    await update.message.reply_text("✅ اول فيديو وصل، ابعت التاني"); return
-                return
-            except Exception as e: await update.message.reply_text(f"فشل الدمج: {e}"); return
-        # باقي ادوات الفيديو
-        if u.get("gif_mode") or u.get("compress_mode") or u.get("state") in ["extract","cut","story_convert","nomusic","trim_video","cover","trim"]:
-            try:
-                await update.message.reply_text("⏳ بحول الفيديو...")
-                file_id = update.message.video.file_id if update.message.video else update.message.document.file_id
-                f = await context.bot.get_file(file_id); ts = int(time.time()*1000); in_path = f"/tmp/{uid}_{ts}_in.mp4"; await f.download_to_drive(in_path)
-                if u.get("gif_mode"):
-                    out_path = f"/tmp/{uid}_{ts}_out.gif"
-                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], capture_output=True, timeout=90)
-                    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000: await update.message.reply_text("الـ ffmpeg مش شغال على السيرفر")
-                    else:
-                        with open(out_path, "rb") as ff: await update.message.reply_document(ff, filename="Nezel.gif")
-                        try: os.remove(out_path)
-                        except: pass
-                elif u.get("compress_mode"):
-                    out_path = f"/tmp/{uid}_{ts}_out.mp4"; ok, msg = compress_video_file(in_path, out_path, crf=28)
-                    if not ok:
-                        ok2, _ = compress_video_file(in_path, out_path, crf=32)
-                        if not ok2: await update.message.reply_text(f"الضغط فشل")
-                        else: ok = True
-                    if ok:
-                        with open(out_path, "rb") as ff: await update.message.reply_video(ff, caption="🗜️ تم ضغط الفيديو")
-                        try: os.remove(out_path)
-                        except: pass
-                elif u.get("state")=="cut" or u.get("cut_mode"):
-                    out_path = f"/tmp/{uid}_{ts}_cut.mp4"
-                    if cut_best_part(in_path, out_path):
-                        with open(out_path,"rb") as ff: await update.message.reply_video(ff, caption="✂️ احلى 30 ثانية")
-                    else: await update.message.reply_text("القص فشل")
-                elif u.get("state")=="story_convert" or u.get("story_convert_mode"):
-                    out_path = f"/tmp/{uid}_{ts}_story.mp4"
-                    if convert_to_story(in_path, out_path):
-                        with open(out_path,"rb") as ff: await update.message.reply_video(ff, caption="📱 جاهز للستوري 1080x1920")
-                    else: await update.message.reply_text("التحويل فشل")
-                elif u.get("state")=="nomusic":
-                    out_path = f"/tmp/{uid}_{ts}_nomusic.mp4"
-                    # lowpass لتقليل الموسيقى - تقريب
-                    r = subprocess.run(["ffmpeg","-y","-i",in_path,"-af","lowpass=f=3000",out_path], capture_output=True, timeout=120)
-                    if os.path.exists(out_path):
-                        with open(out_path,"rb") as ff: await update.message.reply_video(ff, caption="🎼 شلت الموسيقى على قد ما اقدر")
-                    else: await update.message.reply_text("فشل")
-                elif u.get("state")=="trim_video" or u.get("trim_mode"):
-                    u["trim_video"]=in_path; u["state"]="trim_wait_time"; save_data()
-                    await update.message.reply_text("✂️ الفيديو وصل، اكتب الوقت - مثال: من 0:10 لـ 0:30"); return
-                elif u.get("state")=="cover" or u.get("cover_mode"):
-                    out_img = f"/tmp/{uid}_{ts}_cover.jpg"
-                    subprocess.run(["ffmpeg","-y","-i",in_path,"-ss","1","-vframes","1",out_img], capture_output=True, timeout=30)
-                    if os.path.exists(out_img):
-                        with open(out_img,"rb") as ff: await update.message.reply_photo(ff, caption="🖼️ غلاف الفيديو")
-                    else: await update.message.reply_text("فشل الغلاف")
-                else:
-                    out_path = f"/tmp/{uid}_{ts}_out.mp3"
-                    res = subprocess.run(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], capture_output=True, timeout=90)
-                    if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000: await update.message.reply_text("استخراج الصوت فشل")
-                    else:
-                        with open(out_path, "rb") as ff: await update.message.reply_audio(ff, title="Nezel Audio")
-                        try: os.remove(out_path)
-                        except: pass
-                try: os.remove(in_path)
-                except: pass
-                reset_modes(u); save_data(); return
-            except Exception as e: await update.message.reply_text(f"فشل: {e}"); reset_modes(u); save_data(); return
-        else:
+        vobj = update.message.video or update.message.document
+        state = u.get("state")
+        video_tool = bool(u.get("gif_mode") or u.get("compress_mode") or state in ["merge", "extract", "cut", "story_convert", "nomusic", "trim_video", "cover", "trim"])
+        if not video_tool:
             await update.message.reply_text(f"🎬 {T(uid, 'choose_video_action')}", reply_markup=main_keyboard(uid)); return
+        if (vobj.file_size or 0) > TG_DL_LIMIT:
+            await update.message.reply_text("⚠️ تليجرام بيسمح للبوتات تنزل ملفات لحد 20 ميجا بس، ابعت فيديو أصغر")
+            return
+        ts = int(time.time() * 1000)
+        in_path = f"/tmp/{uid}_{ts}_in.mp4"
+        try:
+            f = await context.bot.get_file(vobj.file_id)
+            await f.download_to_drive(in_path)
+            # --- دمج ---
+            if state == "merge":
+                u["merge_videos"].append(in_path); save_data()
+                if len(u["merge_videos"]) < 2:
+                    await update.message.reply_text("✅ اول فيديو وصل، ابعت التاني"); return
+                await update.message.reply_text("⏳ بدمج الفيديوهين...")
+                vids = list(u["merge_videos"])[:2]
+                list_path = f"/tmp/{uid}_{ts}_list.txt"
+                with open(list_path, "w") as lf:
+                    for pp in vids: lf.write(f"file '{pp}'\n")
+                out = f"/tmp/{uid}_{ts}_merged.mp4"
+                await arun(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out], 120)
+                if not (os.path.exists(out) and os.path.getsize(out) > 1000):
+                    # لو الفيديوهين مختلفين في الكودك/المقاس بنعيد الترميز
+                    await arun(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-c:a", "aac", "-movflags", "+faststart", out], 240)
+                if os.path.exists(out) and os.path.getsize(out) > 1000:
+                    with open(out, "rb") as ff: await update.message.reply_video(ff, caption="🔗 تم الدمج", **UP)
+                else:
+                    await update.message.reply_text("الدمج فشل")
+                for pp in list(u["merge_videos"]) + [list_path, out]:
+                    try: os.remove(pp)
+                    except: pass
+                u["merge_videos"] = []; reset_modes(u); save_data(); return
+            # --- تقطيع: بنحفظ الفيديو ونستنى الوقت ---
+            if state in ("trim_video", "trim") or u.get("trim_mode"):
+                u["trim_video"] = in_path; u["state"] = "trim_wait_time"; save_data()
+                await update.message.reply_text("✂️ الفيديو وصل، اكتب الوقت - مثال: من 0:10 لـ 0:30"); return
+            await update.message.reply_text("⏳ بحول الفيديو...")
+            if u.get("gif_mode"):
+                out_path = f"/tmp/{uid}_{ts}_out.gif"
+                await arun(["ffmpeg", "-y", "-i", in_path, "-vf", "fps=10,scale=480:-1:flags=lanczos", out_path], 90)
+                if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000: await update.message.reply_text("الـ ffmpeg مش شغال على السيرفر")
+                else:
+                    with open(out_path, "rb") as ff: await update.message.reply_document(ff, filename="Nezel.gif", **UP)
+            elif u.get("compress_mode"):
+                out_path = f"/tmp/{uid}_{ts}_out.mp4"
+                ok, _ = await asyncio.to_thread(compress_video_file, in_path, out_path, 28)
+                if not ok:
+                    ok, _ = await asyncio.to_thread(compress_video_file, in_path, out_path, 32)
+                if ok:
+                    with open(out_path, "rb") as ff: await update.message.reply_video(ff, caption="🗜️ تم ضغط الفيديو", **UP)
+                else:
+                    await update.message.reply_text("الضغط فشل")
+            elif state == "cut" or u.get("cut_mode"):
+                out_path = f"/tmp/{uid}_{ts}_cut.mp4"
+                if await asyncio.to_thread(cut_best_part, in_path, out_path):
+                    with open(out_path, "rb") as ff: await update.message.reply_video(ff, caption="✂️ أول 30 ثانية", **UP)
+                else: await update.message.reply_text("القص فشل")
+            elif state == "story_convert" or u.get("story_convert_mode"):
+                out_path = f"/tmp/{uid}_{ts}_story.mp4"
+                if await asyncio.to_thread(convert_to_story, in_path, out_path):
+                    with open(out_path, "rb") as ff: await update.message.reply_video(ff, caption="📱 جاهز للستوري 1080x1920", **UP)
+                else: await update.message.reply_text("التحويل فشل")
+            elif state == "nomusic":
+                out_path = f"/tmp/{uid}_{ts}_nomusic.mp4"
+                await arun(["ffmpeg", "-y", "-i", in_path, "-af", "lowpass=f=3000", out_path], 120)
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                    with open(out_path, "rb") as ff: await update.message.reply_video(ff, caption="🎼 قللت الترددات العالية (ده مش فصل حقيقي للموسيقى)", **UP)
+                else: await update.message.reply_text("فشل")
+            elif state == "cover" or u.get("cover_mode"):
+                out_img = f"/tmp/{uid}_{ts}_cover.jpg"
+                await arun(["ffmpeg", "-y", "-i", in_path, "-ss", "1", "-vframes", "1", out_img], 30)
+                if os.path.exists(out_img):
+                    with open(out_img, "rb") as ff: await update.message.reply_photo(ff, caption="🖼️ غلاف الفيديو", **UP)
+                else: await update.message.reply_text("فشل الغلاف")
+            else:
+                out_path = f"/tmp/{uid}_{ts}_out.mp3"
+                await arun(["ffmpeg", "-y", "-i", in_path, "-vn", "-ab", "192k", out_path], 90)
+                if not os.path.exists(out_path) or os.path.getsize(out_path) < 1000: await update.message.reply_text("استخراج الصوت فشل")
+                else:
+                    with open(out_path, "rb") as ff: await update.message.reply_audio(ff, title="Nezel Audio", **UP)
+            _cleanup_glob(f"/tmp/{uid}_{ts}_*")
+            reset_modes(u); save_data(); return
+        except Exception as e:
+            _cleanup_glob(f"/tmp/{uid}_{ts}_*")
+            await update.message.reply_text(f"فشل: {e}"); reset_modes(u); save_data(); return
+
+    # ===== صور =====
     if update.message.photo:
         caption = (update.message.caption or "").strip(); cap_url = extract_url(caption)
-        if u.get("state")=="meme_photo" or u.get("meme_mode"):
-            u["meme_photo"]=update.message.photo[-1].file_id; u["state"]="meme_text"; save_data()
+        if u.get("state") == "meme_photo" or u.get("meme_mode"):
+            u["meme_photo"] = update.message.photo[-1].file_id; u["state"] = "meme_text"; save_data()
             await update.message.reply_text("😂 الصورة وصلت، اكتب النص اللي عايزه على الميم"); return
         if cap_url and not u.get("pdf_mode"):
             text = caption
@@ -1194,58 +1335,88 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text: return
     if not u.get("lang"):
         await update.message.reply_text("اختر لغتك\n\nChoose your language", reply_markup=lang_keyboard()); return
-    # تقطيع - انتظار الوقت
-    if u.get("state")=="trim_wait_time":
+
+    # ===== تقطيع - انتظار الوقت =====
+    if u.get("state") == "trim_wait_time":
         m = re.findall(r'(\d+):(\d+)', text)
-        if len(m)>=2:
-            s = int(m[0][0])*60+int(m[0][1]); e = int(m[1][0])*60+int(m[1][1])
-            in_path = u.get("trim_video")
-            out = f"/tmp/{uid}_trim_out.mp4"
-            subprocess.run(["ffmpeg","-y","-i",in_path,"-ss",str(s),"-to",str(e),"-c","copy",out], capture_output=True, timeout=90)
-            if os.path.exists(out):
-                with open(out,"rb") as ff: await update.message.reply_video(ff, caption=f"✂️ من {s} لـ {e}")
-                try: os.remove(out); os.remove(in_path)
-                except: pass
-            else: await update.message.reply_text("القص فشل")
-        else: await update.message.reply_text("اكتب زي كده: من 0:10 لـ 0:30")
+        in_path = u.get("trim_video")
+        if len(m) < 2:
+            await update.message.reply_text("اكتب زي كده: من 0:10 لـ 0:30"); return
+        if not in_path or not os.path.exists(in_path):
+            await update.message.reply_text("الفيديو مبقاش موجود، ابعته تاني")
+            reset_modes(u); save_data(); return
+        s = int(m[0][0]) * 60 + int(m[0][1]); e = int(m[1][0]) * 60 + int(m[1][1])
+        if e <= s:
+            await update.message.reply_text("وقت النهاية لازم يكون اكبر من البداية، اكتب تاني: من 0:10 لـ 0:30"); return
+        out = f"/tmp/{uid}_{int(time.time()*1000)}_trim_out.mp4"
+        # بنعيد الترميز عشان القص يبقى دقيق (copy كان بيقص على اقرب keyframe)
+        await arun(["ffmpeg", "-y", "-ss", str(s), "-i", in_path, "-t", str(e - s), "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-c:a", "aac", "-movflags", "+faststart", out], 120)
+        if os.path.exists(out) and os.path.getsize(out) > 1000:
+            with open(out, "rb") as ff: await update.message.reply_video(ff, caption=f"✂️ من {s} لـ {e} ثانية", **UP)
+        else:
+            await update.message.reply_text("القص فشل")
+        for pp in (out, in_path):
+            try: os.remove(pp)
+            except: pass
         reset_modes(u); save_data(); return
-    if u.get("state")=="meme_text" and u.get("meme_photo"):
+
+    if u.get("state") == "meme_text" and u.get("meme_photo"):
         try:
-            f = await context.bot.get_file(u["meme_photo"]); p=f"/tmp/{uid}_meme.jpg"; await f.download_to_drive(p)
-            out=f"/tmp/{uid}_meme_out.jpg"
-            if make_meme(p, text, out):
-                with open(out,"rb") as ff: await update.message.reply_photo(ff, caption="😂 الميم جاهز")
+            f = await context.bot.get_file(u["meme_photo"]); p = f"/tmp/{uid}_meme.jpg"; await f.download_to_drive(p)
+            out = f"/tmp/{uid}_meme_out.jpg"
+            if await asyncio.to_thread(make_meme, p, text, out):
+                with open(out, "rb") as ff: await update.message.reply_photo(ff, caption="😂 الميم جاهز", **UP)
             else: await update.message.reply_text("فشل الميم")
+            _cleanup_glob(f"/tmp/{uid}_meme*.jpg")
             reset_modes(u); save_data(); return
         except Exception as e: await update.message.reply_text(f"فشل: {e}"); return
-    if u.get("state")=="follow":
-        username = text.replace("@","").strip()
+
+    if u.get("state") == "follow":
+        username = text.replace("@", "").strip()
         follows = DATA.get("follows", {})
-        if username not in follows: follows[username]=[]
+        if username not in follows: follows[username] = []
         if uid not in follows[username]: follows[username].append(uid)
-        DATA["follows"]=follows; save_data()
+        DATA["follows"] = follows; save_data()
         await update.message.reply_text(f"🔔 تمام، هبعتلك لما @{username} ينزل جديد"); reset_modes(u); save_data(); return
-    if u.get("state")=="quiz":
+
+    if u.get("state") == "quiz":
         qq, aa = get_today_quiz()
-        if text.strip().lower() in aa.lower() or aa.lower() in text.strip().lower():
-            u["points"]=int(u.get("points",0))+10; save_data()
-            await update.message.reply_text("🎉 صح! +10 نقط")
+        today = str(date.today())
+        if u.get("quiz_date") == today:
+            await update.message.reply_text("🎁 جاوبت على مسابقة النهاردة، تعالى بكرة")
         else:
-            await update.message.reply_text(f"❌ غلط، الصح: {aa}")
+            u["quiz_date"] = today  # محاولة واحدة في اليوم
+            ua = norm_ar(text); ca = norm_ar(aa)
+            if ua == ca or (len(ca) >= 2 and ca in ua):
+                u["points"] = int(u.get("points", 0)) + 10
+                await update.message.reply_text("🎉 صح! +10 نقط")
+            else:
+                await update.message.reply_text(f"❌ غلط، الصح: {aa}")
         reset_modes(u); save_data(); return
-    if u.get("state")=="caption" or u.get("caption_mode"):
+
+    if u.get("state") == "caption" or u.get("caption_mode"):
         cap = make_caption(text)
         await update.message.reply_text(f"✍️ الكابشن:\n\n{cap}")
         reset_modes(u); save_data(); return
-    if u.get("state")=="lyrics" or u.get("lyrics_mode"):
+
+    if u.get("state") == "lyrics" or u.get("lyrics_mode"):
+        reset_modes(u); save_data()
         await update.message.reply_text("🎤 بجيب الصوت والكلمات...")
-        base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-        files, _ = download_with_ytdlp(text if "http" in text else f"https://www.youtube.com/watch?v={text}", base, want_audio=True, quality="720")
-        lyr = get_lyrics(text)
-        if files: await send_downloaded(update.message, files, True, None)
+        url = extract_url(text)
+        if url:
+            title = (await asyncio.to_thread(get_title, url)) or text
+        else:
+            results = await asyncio.to_thread(do_search, text)
+            if not results:
+                await update.message.reply_text(T(uid, "not_found")); return
+            url = f"https://www.youtube.com/watch?v={results[0]['id']}"
+            title = results[0]["title"]
+        lyr = await asyncio.to_thread(get_lyrics, title)
+        await do_download_flow(update.message, uid, url, want_audio=True, quality="720")
         if lyr: await update.message.reply_text(f"🎤 الكلمات:\n\n{lyr[:3000]}")
         else: await update.message.reply_text("⚠️ ملقيتش كلمات للاغنية دي")
-        reset_modes(u); save_data(); return
+        return
+
     if u.get("state") == "broadcast" and int(uid) == ADMIN_ID:
         u["state"] = "home"; save_data()
         sent = 0
@@ -1281,7 +1452,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(show_main_menu_text(uid, user.first_name or ""), reply_markup=main_keyboard(uid)); return
     if u.get("translate_mode"):
         u["translate_mode"] = False; u["state"] = "home"; save_data()
-        has_ar = any('\u0600' <= c <= '\u06FF' for c in text); target = "en" if has_ar else "ar"; tr = translate_text(text, target)
+        has_ar = any('\u0600' <= c <= '\u06FF' for c in text); target = "en" if has_ar else "ar"; tr = await asyncio.to_thread(translate_text, text, target)
         await update.message.reply_text(f"🌐 {T(uid, 'translate_done')}:\n{tr}")
         await update.message.reply_text(show_main_menu_text(uid, user.first_name or ""), reply_markup=main_keyboard(uid)); return
     if u.get("summarize_mode"):
@@ -1293,28 +1464,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if url and "instagram.com" in url:
             await update.message.reply_text("📸 بحمل الستوري...")
             base = "/tmp/" + str(uid) + "_" + str(int(time.time()*1000))
-            files, thumb = download_with_ytdlp(url, base, want_audio=False, quality=u.get("quality", "720"))
+            files, thumb = await asyncio.to_thread(download_with_ytdlp, url, base, False, u.get("quality", "720"))
             if files: await send_downloaded(update.message, files, False, None, thumb)
             else: await update.message.reply_text("مش عارف اجيب الستوري، انستا قافل الستوري من غير تسجيل دخول")
         else: await update.message.reply_text("📸 ابعت لينك الستوري مش اليوزر")
         return
     if u.get("state") == "movies" or u.get("movie_mode"):
         reset_modes(u); save_data(); await update.message.reply_text("🎬 بدور...")
-        res = search_movies(text)
+        res = await asyncio.to_thread(search_movies, text)
         if not res: await update.message.reply_text(T(uid, "not_found")); return
         out = "🎬 لقيت دول:\n\n"
         for r in res: out += f"🎬 {r['name']}\n{r['summary'][:150]}\n{r['url']}\n\n"
         await update.message.reply_text(out); return
     if u.get("state") == "wallpaper" or u.get("wallpaper_mode"):
         reset_modes(u); save_data(); await update.message.reply_text("🖼️ بجيبلك خلفيات...")
-        for w in get_wallpapers(text)[:3]:
-            try: await update.message.reply_photo(w, caption="🖼️ خلفية HD من نزل")
-            except: pass
+        sent = 0
+        for w in await asyncio.to_thread(get_wallpapers, text):
+            if sent >= 3: break
+            try:
+                await update.message.reply_photo(w, caption="🖼️ خلفية HD من نزل"); sent += 1
+            except Exception as e: print("wallpaper send err:", e)
+        if not sent: await update.message.reply_text(T(uid, "not_found"))
         return
     if u.get("state") == "search":
         u["state"] = "home"; save_data()
         msg = await update.message.reply_text(f"🔍 {T(uid, 'searching')}: {text}\n{T(uid, 'search_wait')}...")
-        results = do_search(text)
+        results = await asyncio.to_thread(do_search, text)
         if not results: await msg.edit_text(T(uid, "not_found")); return
         buttons = []
         for r in results:
@@ -1323,21 +1498,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             buttons.append([InlineKeyboardButton(f"🎵 {title}", callback_data=f"pick_{r['id']}")])
         buttons.append([InlineKeyboardButton(f"⬅️ {T(uid, 'back')}", callback_data="home")])
         await msg.edit_text(f"{T(uid, 'choose_result')}:", reply_markup=InlineKeyboardMarkup(buttons)); return
-    # تحميل اكتر من لينك
+
+    # ===== تحميل اكتر من لينك =====
+    SUPPORTED = ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch", "pinterest.", "reddit.com", "redd.it", "twitch.tv", "soundcloud.com", "t.me/"]
     urls_all = extract_all_urls(text)
     if len(urls_all) > 1:
         await update.message.reply_text(f"🔗 لقيت {len(urls_all)} لينكات، بحملهم واحد واحد...")
         for uu in urls_all[:5]:
-            if any(x in uu for x in ["youtube.com","youtu.be","tiktok.com","instagram.com","facebook.com","fb.watch","pinterest.","reddit.com","twitch.tv","soundcloud.com","t.me/"]):
+            if any(x in uu for x in SUPPORTED):
                 u["last_link"] = uu; save_history(u, uu, uu)
-                await do_download_flow(update.message, uid, uu, want_audio=(u.get("download_mode")=="audio"), quality=u.get("quality","720"), is_playlist=(u.get("download_mode")=="playlist"))
+                await do_download_flow(update.message, uid, uu, want_audio=(u.get("download_mode") == "audio"), quality=u.get("quality", "720"), is_playlist=(u.get("download_mode") == "playlist"), check_rate=False)
+        if u.get("download_mode") == "playlist": u["download_mode"] = "video"; save_data()
         return
     url = extract_url(text)
-    if url and any(x in url for x in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "facebook.com", "fb.watch", "pinterest.", "reddit.com", "twitch.tv", "soundcloud.com", "t.me/"]):
+    if url and any(x in url for x in SUPPORTED):
         u["last_link"] = url; save_history(u, url, url)
         mode = u.get("download_mode", "video")
         want_audio = (mode == "audio")
         is_playlist = (mode == "playlist")
+        if is_playlist:  # وضع القايمة لمرة واحدة، عشان اللينكات العادية متبوظش بعدها
+            u["download_mode"] = "video"; save_data()
         await do_download_flow(update.message, uid, url, want_audio=want_audio, quality=u.get("quality", "720"), is_playlist=is_playlist)
         return
     if "http" in text:
@@ -1349,9 +1529,15 @@ async def backup_job(context: ContextTypes.DEFAULT_TYPE):
     save_data()
     print("backup done", datetime.now())
 
+async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
+    print("ERROR:", repr(context.error))
+
 def main():
     if not BOT_TOKEN: print("ERROR: BOT_TOKEN missing"); return
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (Application.builder().token(BOT_TOKEN)
+           .concurrent_updates(True)  # من غيرها البوت بيخدم يوزر واحد بس في نفس الوقت
+           .connect_timeout(30).read_timeout(60).write_timeout(60).pool_timeout(30)
+           .build())
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
@@ -1369,12 +1555,14 @@ def main():
     app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_message))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_message))
     app.add_handler(MessageHandler(filters.CAPTION, handle_message))
-    # backup كل 6 ساعات
-    try:
+    app.add_error_handler(on_error)
+    # backup كل 6 ساعات (محتاج: pip install "python-telegram-bot[job-queue]")
+    if app.job_queue:
         app.job_queue.run_repeating(backup_job, interval=21600, first=21600)
-    except: pass
+    else:
+        print("WARNING: job_queue مش متسطب - الباك اب الدوري مش شغال")
     print("Bot started - Full version + All New Features")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()

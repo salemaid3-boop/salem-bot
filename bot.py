@@ -598,7 +598,7 @@ def format_for_quality(quality="720", want_audio=False):
     if want_audio: return "bestaudio/best"
     q = str(quality).lower()
     h = {"720": 720, "1080": 1080, "2k": 1440, "4k": 2160}.get(q, 720)
-    return (f"bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={h}]+bestaudio/best[height<={h}]/best")
+    return (f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best")
 
 def get_tiktok_id_from_url(url):
     try:
